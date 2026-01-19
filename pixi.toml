@@ -1,6 +1,6 @@
 [workspace]
 name = "coverm"
-version = "0.8.0"
+version = "0.9.0"
 description = "CoverM tool for computing various forms of DNA sequence coverage calculations"
 channels = [
     "conda-forge",
@@ -31,7 +31,7 @@ strobealign = ">=0.14.0"  # tests use a pregenerated v3 database
 
 [package]
 name = "coverm"
-version = "0.8.0"  # keep this in sync with [workspace].version
+version = "0.9.0"  # keep this in sync with [workspace].version
 
 [package.build]
 backend = { name = "pixi-build-rattler-build", version = "0.3.*" }

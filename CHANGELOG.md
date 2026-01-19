@@ -5,6 +5,15 @@ All notable changes to CoverM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-01-19
+
+### Added
+- **CRAM format support** for cached alignment files via `--use-cram` flag
+  - Reduces disk space usage by ~50% compared to BAM format
+  - Available in `contig`, `genome`, and `make` subcommands
+  - Requires `--cache-unfiltered-bam-directory` or `--cache-unfiltered-bam-files`
+  - Note: CRAM files require the original reference FASTA for reading
+
 ## [0.8.0] - 2026-01-19
 
 ### Added
