@@ -668,6 +668,7 @@ fn main() {
             let params = MappingParameters::generate_from_clap(m, mapping_program, &None);
             let mut generator_sets = vec![];
             let discard_unmapped_reads = m.get_flag("discard-unmapped");
+            let use_cram = m.get_flag("use-cram");
 
             for reference_wise_params in params {
                 let mut bam_readers = vec![];
@@ -677,8 +678,13 @@ fn main() {
                 // https://github.com/wwood/CoverM/issues/128
                 let mut unique_names = HashSet::new();
                 for p in reference_wise_params {
-                    let name =
-                        generate_cached_bam_file_name(output_directory, p.reference, p.read1);
+                    let name = generate_cached_bam_file_name(
+                        output_directory,
+                        p.reference,
+                        p.read1,
+                        use_cram,
+                    );
+                    let reference_fasta = if use_cram { Some(p.reference) } else { None };
                     bam_readers.push(
                         coverm::bam_generator::generate_bam_maker_generator_from_reads(
                             mapping_program,
@@ -690,6 +696,8 @@ fn main() {
                             &name.clone(),
                             discard_unmapped_reads,
                             p.mapping_options,
+                            use_cram,
+                            reference_fasta,
                         ),
                     );
                     if !unique_names.insert(name.clone()) {
@@ -1340,6 +1348,7 @@ where
         );
     }
     let discard_unmapped = m.get_flag("discard-unmapped");
+    let use_cram = m.get_flag("use-cram");
     let sort_threads = *m.get_one::<u16>("threads").unwrap();
     let params = MappingParameters::generate_from_clap(m, mapping_program, reference_tempfile);
     let mut bam_readers = vec![];
@@ -1360,7 +1369,8 @@ where
             Some(prev) => Some(format!("{prev}|{reference_name}")),
             None => Some(reference_name),
         };
-        let mut bam_file_cache = build_bam_file_cache_fn(m, reference_tempfile, reference);
+        let mut bam_file_cache =
+            build_bam_file_cache_fn(m, reference_tempfile, reference, use_cram);
 
         for p in reference_wise_params {
             bam_readers.push(
@@ -1418,6 +1428,7 @@ fn get_streamed_bam_readers(
         );
     }
     let discard_unmapped = m.get_flag("discard-unmapped");
+    let use_cram = m.get_flag("use-cram");
 
     let params = MappingParameters::generate_from_clap(m, mapping_program, reference_tempfile);
     let mut generator_set = vec![];
@@ -1426,7 +1437,8 @@ fn get_streamed_bam_readers(
         let index = setup_mapping_index(&reference_wise_params, m, mapping_program);
 
         let reference = reference_wise_params.reference;
-        let mut bam_file_cache = build_bam_file_cache_fn(m, reference_tempfile, reference);
+        let mut bam_file_cache =
+            build_bam_file_cache_fn(m, reference_tempfile, reference, use_cram);
 
         for p in reference_wise_params {
             bam_readers.push(
@@ -1457,9 +1469,15 @@ fn get_streamed_bam_readers(
     generator_set
 }
 
-fn generate_cached_bam_file_name(directory: &str, reference: &str, read1_path: &str) -> String {
+fn generate_cached_bam_file_name(
+    directory: &str,
+    reference: &str,
+    read1_path: &str,
+    use_cram: bool,
+) -> String {
+    let extension = if use_cram { ".cram" } else { ".bam" };
     debug!(
-        "Constructing BAM file cache name in directory {directory}, reference {reference}, read1_path {read1_path}"
+        "Constructing cache file name in directory {directory}, reference {reference}, read1_path {read1_path}, extension {extension}"
     );
     std::path::Path::new(directory)
         .to_str()
@@ -1477,7 +1495,7 @@ fn generate_cached_bam_file_name(directory: &str, reference: &str, read1_path: &
             .expect("Unable to convert read1 name to file name")
             .to_str()
             .expect("Unable to covert file name into str")
-        + ".bam"
+        + extension
 }
 
 fn setup_bam_cache_directory(cache_directory: &str) {
@@ -1610,8 +1628,10 @@ fn build_bam_file_cache_fn<'a>(
     m: &'a clap::ArgMatches,
     reference_tempfile: &'a Option<NamedTempFile>,
     reference: &'a str,
+    use_cram: bool,
 ) -> impl FnMut(&str, Option<&str>) -> Option<String> + 'a {
     let mut bam_cache_name_iter = build_cache_name_iter(m);
+    let file_type = if use_cram { "CRAM" } else { "BAM" };
     move |read1: &str, read2: Option<&str>| -> Option<String> {
         if let Some(iter) = bam_cache_name_iter.as_mut() {
             let name = iter.next().unwrap_or_else(|| {
@@ -1619,8 +1639,8 @@ fn build_bam_file_cache_fn<'a>(
                 process::exit(1);
             });
             match read2 {
-                Some(r2) => info!("Caching BAM file to {name} for readset {read1} {r2}"),
-                None => info!("Caching BAM file to {name} for readset {read1}"),
+                Some(r2) => info!("Caching {file_type} file to {name} for readset {read1} {r2}"),
+                None => info!("Caching {file_type} file to {name} for readset {read1}"),
             }
             Some(name)
         } else if m.contains_id("cache-unfiltered-bam-directory") {
@@ -1632,10 +1652,11 @@ fn build_bam_file_cache_fn<'a>(
                     None => reference,
                 },
                 read1,
+                use_cram,
             );
             match read2 {
-                Some(r2) => info!("Caching BAM file to {path} for readset {read1} {r2}"),
-                None => info!("Caching BAM file to {path} for readset {read1}"),
+                Some(r2) => info!("Caching {file_type} file to {path} for readset {read1} {r2}"),
+                None => info!("Caching {file_type} file to {path} for readset {read1}"),
             }
             Some(path)
         } else {
@@ -1658,6 +1679,7 @@ fn get_streamed_filtered_bam_readers(
         );
     }
     let discard_unmapped = m.get_flag("discard-unmapped");
+    let use_cram = m.get_flag("use-cram");
 
     let params = MappingParameters::generate_from_clap(m, mapping_program, reference_tempfile);
     let mut generator_set = vec![];
@@ -1666,7 +1688,8 @@ fn get_streamed_filtered_bam_readers(
         let index = setup_mapping_index(&reference_wise_params, m, mapping_program);
 
         let reference = reference_wise_params.reference;
-        let mut bam_file_cache = build_bam_file_cache_fn(m, reference_tempfile, reference);
+        let mut bam_file_cache =
+            build_bam_file_cache_fn(m, reference_tempfile, reference, use_cram);
 
         for p in reference_wise_params {
             bam_readers.push(

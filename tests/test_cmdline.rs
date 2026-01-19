@@ -410,6 +410,180 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_cram_files() {
+        let td = tempfile::TempDir::new().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "contig",
+                "--coupled",
+                "tests/data/reads_for_seq1_and_seq2.1.fq.gz",
+                "tests/data/reads_for_seq1_and_seq2.2.fq.gz",
+                "--output-format",
+                "sparse",
+                "--reference",
+                "tests/data/7seqs.fna",
+                "-p",
+                "minimap2-sr",
+                "--cache-unfiltered-bam-directory",
+                td.path().to_str().unwrap(),
+                "--use-cram",
+            ])
+            .succeeds()
+            .stdout()
+            .contains(
+                "Sample	Contig	Mean
+7seqs.fna/reads_for_seq1_and_seq2.1.fq.gz	genome1~random_sequence_length_11000	0
+7seqs.fna/reads_for_seq1_and_seq2.1.fq.gz	genome1~random_sequence_length_11010	0
+7seqs.fna/reads_for_seq1_and_seq2.1.fq.gz	genome2~seq1	1.4117647
+7seqs.fna/reads_for_seq1_and_seq2.1.fq.gz	genome3~random_sequence_length_11001	0
+7seqs.fna/reads_for_seq1_and_seq2.1.fq.gz	genome4~random_sequence_length_11002	0
+7seqs.fna/reads_for_seq1_and_seq2.1.fq.gz	genome5~seq2	1.2435294
+7seqs.fna/reads_for_seq1_and_seq2.1.fq.gz	genome6~random_sequence_length_11003	0",
+            )
+            .unwrap();
+        // Verify CRAM file was created (not BAM)
+        assert!(td
+            .path()
+            .join("7seqs.fna.reads_for_seq1_and_seq2.1.fq.gz.cram")
+            .is_file());
+        assert!(!td
+            .path()
+            .join("7seqs.fna.reads_for_seq1_and_seq2.1.fq.gz.bam")
+            .exists());
+    }
+
+    #[test]
+    fn test_use_cram_requires_cache() {
+        // --use-cram should fail without cache option
+        Assert::main_binary()
+            .with_args(&[
+                "contig",
+                "--coupled",
+                "tests/data/reads_for_seq1_and_seq2.1.fq.gz",
+                "tests/data/reads_for_seq1_and_seq2.2.fq.gz",
+                "--reference",
+                "tests/data/7seqs.fna",
+                "--use-cram",
+            ])
+            .fails()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_cache_cram_files_genome() {
+        // Test CRAM caching in genome mode
+        let td = tempfile::TempDir::new().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--coupled",
+                "tests/data/reads_for_seq1_and_seq2.1.fq.gz",
+                "tests/data/reads_for_seq1_and_seq2.2.fq.gz",
+                "--genome-fasta-files",
+                "tests/data/7seqs.fna",
+                "-p",
+                "minimap2-sr",
+                "--cache-unfiltered-bam-directory",
+                td.path().to_str().unwrap(),
+                "--use-cram",
+                "-m",
+                "mean",
+            ])
+            .succeeds()
+            .unwrap();
+        // Verify CRAM file was created (not BAM)
+        assert!(td
+            .path()
+            .join("coverm-genome.reads_for_seq1_and_seq2.1.fq.gz.cram")
+            .is_file());
+        assert!(!td
+            .path()
+            .join("coverm-genome.reads_for_seq1_and_seq2.1.fq.gz.bam")
+            .exists());
+    }
+
+    #[test]
+    fn test_read_cram_files() {
+        // Test that we can read back a CRAM file created with --use-cram
+        // Using contig mode since it's simpler (no genome definition needed for reading)
+        let td = tempfile::TempDir::new().unwrap();
+
+        // First, create a CRAM file in contig mode
+        Assert::main_binary()
+            .with_args(&[
+                "contig",
+                "--coupled",
+                "tests/data/reads_for_seq1_and_seq2.1.fq.gz",
+                "tests/data/reads_for_seq1_and_seq2.2.fq.gz",
+                "--reference",
+                "tests/data/7seqs.fna",
+                "-p",
+                "minimap2-sr",
+                "--cache-unfiltered-bam-directory",
+                td.path().to_str().unwrap(),
+                "--use-cram",
+            ])
+            .succeeds()
+            .unwrap();
+
+        let cram_file = td
+            .path()
+            .join("7seqs.fna.reads_for_seq1_and_seq2.1.fq.gz.cram");
+        assert!(cram_file.is_file());
+
+        // Now read the CRAM file back in contig mode
+        // Note: --bam-files and --reference are mutually exclusive in contig mode
+        // The CRAM will be read using the embedded reference or REF_PATH env variable
+        Assert::main_binary()
+            .with_args(&[
+                "contig",
+                "--bam-files",
+                cram_file.to_str().unwrap(),
+                "-m",
+                "mean",
+            ])
+            .succeeds()
+            .stdout()
+            .contains("genome2~seq1") // Verify we got coverage results
+            .unwrap();
+    }
+
+    #[test]
+    fn test_cache_cram_files_genome_fasta_directory() {
+        // Test CRAM caching with --genome-fasta-directory (the common use case)
+        // This is the case where a reference_tempfile is created
+        let td = tempfile::TempDir::new().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--coupled",
+                "tests/data/reads_for_seq1_and_seq2.1.fq.gz",
+                "tests/data/reads_for_seq1_and_seq2.2.fq.gz",
+                "--genome-fasta-directory",
+                "tests/data/genomes_dir/",
+                "-p",
+                "minimap2-sr",
+                "--cache-unfiltered-bam-directory",
+                td.path().to_str().unwrap(),
+                "--use-cram",
+                "--discard-unmapped",
+                "-m",
+                "mean",
+            ])
+            .succeeds()
+            .unwrap();
+        // Verify CRAM file was created (not BAM)
+        assert!(td
+            .path()
+            .join("coverm-genome.reads_for_seq1_and_seq2.1.fq.gz.cram")
+            .is_file());
+        assert!(!td
+            .path()
+            .join("coverm-genome.reads_for_seq1_and_seq2.1.fq.gz.bam")
+            .exists());
+    }
+
+    #[test]
     fn test_non_existant_cache_bam_files() {
         Assert::main_binary()
             .with_args(&[

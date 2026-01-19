@@ -739,6 +739,8 @@ pub fn generate_bam_maker_generator_from_reads(
     cached_bam_file: &str,
     discard_unmapped: bool,
     mapping_options: Option<&str>,
+    use_cram: bool,
+    reference_fasta: Option<&str>,
 ) -> NamedBamMakerGenerator {
     let mapping_log = tempfile::Builder::new()
         .prefix("coverm-mapping-log")
@@ -769,18 +771,33 @@ pub fn generate_bam_maker_generator_from_reads(
         .prefix("coverm-make-samtools-sort")
         .tempfile()
         .expect("Failed to create tempfile as samtools sort prefix");
+
+    // Determine output format: CRAM (-C) or BAM (-b)
+    let format_flag = if use_cram { "-C" } else { "-b" };
+    let reference_option = if use_cram {
+        match reference_fasta {
+            Some(ref_path) => format!("-T '{}'", ref_path),
+            None => {
+                error!("CRAM output requested but no reference FASTA provided");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        String::new()
+    };
+
     let cmd_string = format!(
         "set -e -o pipefail; \
          {} 2>{} \
          | samtools sort -T '{}' -l0 -@ {} 2>{} \
-         | samtools view {} -b -@ {} -o '{}' 2>{}",
+         | samtools view {} {} {} -@ {} -o '{}' 2>{}",
         // Mapping program
         mapping_command,
         mapping_log
             .path()
             .to_str()
             .expect("Failed to convert tempfile path to str"),
-        // samtools
+        // samtools sort
         bwa_sort_prefix
             .path()
             .to_str()
@@ -795,6 +812,8 @@ pub fn generate_bam_maker_generator_from_reads(
             true => "-F4",
             false => "",
         },
+        format_flag,      // -C for CRAM or -b for BAM
+        reference_option, // -T 'reference.fasta' for CRAM, empty for BAM
         threads - 1,
         cached_bam_file,
         samtools_view_cache_log

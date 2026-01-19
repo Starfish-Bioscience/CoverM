@@ -621,6 +621,15 @@ pub fn contig_full_help() -> Manual {
                 Flag::new()
                     .long("--discard-unmapped")
                     .help("Exclude unmapped reads from cached BAM files. [default: not set]"),
+            )
+            .flag(
+                Flag::new()
+                    .long("--use-cram")
+                    .help("Output cached alignment files in CRAM format instead of BAM. \
+                CRAM files are ~50% smaller but REQUIRE the reference FASTA for reading. \
+                WARNING: Do not delete reference files after creating CRAM cache. \
+                Only applies with --cache-unfiltered-bam-directory or --cache-unfiltered-bam-files. \
+                [default: not set]"),
             ),
     );
 
@@ -870,6 +879,15 @@ pub fn genome_full_help() -> Manual {
                 Flag::new()
                     .long("--discard-unmapped")
                     .help("Exclude unmapped reads from cached BAM files. [default: not set]"),
+            )
+            .flag(
+                Flag::new()
+                    .long("--use-cram")
+                    .help("Output cached alignment files in CRAM format instead of BAM. \
+                CRAM files are ~50% smaller but REQUIRE the reference FASTA for reading. \
+                WARNING: Do not delete reference files after creating CRAM cache. \
+                Only applies with --cache-unfiltered-bam-directory or --cache-unfiltered-bam-files. \
+                [default: not set]"),
             ),
     );
 
@@ -1248,6 +1266,12 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                 .arg(
                     Arg::new("discard-unmapped")
                         .long("discard-unmapped")
+                        .requires("cache-unfiltered-bam")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("use-cram")
+                        .long("use-cram")
                         .requires("cache-unfiltered-bam")
                         .action(clap::ArgAction::SetTrue),
                 )
@@ -1786,6 +1810,12 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
+                    Arg::new("use-cram")
+                        .long("use-cram")
+                        .requires("cache-unfiltered-bam")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
                     Arg::new("min-read-aligned-length")
                         .long("min-read-aligned-length")
                         .value_parser(clap::value_parser!(u32)),
@@ -2115,6 +2145,11 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                 .arg(
                     Arg::new("discard-unmapped")
                         .long("discard-unmapped")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("use-cram")
+                        .long("use-cram")
                         .action(clap::ArgAction::SetTrue),
                 )
                 .arg(
