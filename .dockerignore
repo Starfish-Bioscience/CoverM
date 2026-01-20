@@ -1,0 +1,14 @@
+target/debug/
+target/doc/
+target/.rustc_info.json
+.git/
+.github/
+tests/
+docs/
+*.md
+!README.md
+!INSTALL.md
+*.sif
+*.def
+.pixi/
+.claude/

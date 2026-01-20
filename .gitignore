@@ -10,3 +10,13 @@ vscode.*
 issue38
 issue60
 .pixi
+
+# IDE
+.vscode/
+.idea/
+
+# Container artifacts (binaries should be in releases, not repo)
+*.sif
+
+# Claude Code
+.claude/

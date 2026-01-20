@@ -1,0 +1,69 @@
+Bootstrap: docker
+From: mambaorg/micromamba:1.5.10-noble
+
+%labels
+    Author Starfish-Bioscience
+    Version 0.9.0
+    Description CoverM with CRAM support - Full dependencies
+
+%files
+    coverm /usr/local/bin/coverm
+    conda.yml /scratch/conda.yml
+
+%post
+    micromamba install -y -n base -f /scratch/conda.yml
+    micromamba install -y -n base conda-forge::procps-ng
+    micromamba env export --name base --explicit > environment.lock
+    echo ">> CONDA_LOCK_START"
+    cat environment.lock
+    echo "<< CONDA_LOCK_END"
+    micromamba clean -a -y
+
+    # Make binary executable
+    chmod +x /usr/local/bin/coverm
+
+%environment
+    export PATH="$MAMBA_ROOT_PREFIX/bin:/usr/local/bin:$PATH"
+    export LC_ALL=C
+
+%runscript
+    coverm "$@"
+
+%test
+    echo "Testing CoverM installation..."
+    coverm --version
+    echo "Testing dependencies..."
+    samtools --version | head -1
+    minimap2 --version
+    bwa 2>&1 | head -3
+    bwa-mem2 version 2>&1 | tail -1
+    skani -V
+    fastani --version 2>&1 | head -1
+    strobealign --version
+
+%help
+    CoverM version 0.9.0 with CRAM support
+    Full installation with all dependencies
+
+    Available tools:
+    - coverm (main tool)
+    - samtools
+    - minimap2
+    - bwa
+    - bwa-mem2
+    - skani
+    - fastani
+    - strobealign
+
+    Usage:
+        apptainer run coverm.sif genome --help
+        apptainer exec coverm.sif coverm genome [options]
+
+    Example with CRAM caching:
+        apptainer exec coverm.sif coverm genome \
+            --coupled reads.1.fq.gz reads.2.fq.gz \
+            --genome-fasta-directory genomes/ \
+            --cache-unfiltered-bam-directory cache/ \
+            --use-cram \
+            --discard-unmapped \
+            -o output.tsv

@@ -1,0 +1,11 @@
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - bioconda::samtools=1.23
+  - bioconda::minimap2=2.30
+  - bioconda::bwa
+  - bioconda::bwa-mem2=2.3
+  - bioconda::skani
+  - bioconda::fastani
+  - bioconda::strobealign
