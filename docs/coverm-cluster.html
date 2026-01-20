@@ -28,6 +28,22 @@ document.addEventListener('DOMContentLoaded', function(e) {
   }
 });
 </script>
+<script>// Hide empty <a> tag within highlighted CodeBlock for screen reader accessibility (see https://github.com/jgm/pandoc/issues/6352#issuecomment-626106786) -->
+// v0.0.1
+// Written by JooYoung Seo (jooyoung@psu.edu) and Atsushi Yasumoto on June 1st, 2020.
+
+document.addEventListener('DOMContentLoaded', function() {
+  const codeList = document.getElementsByClassName("sourceCode");
+  for (var i = 0; i < codeList.length; i++) {
+    var linkList = codeList[i].getElementsByTagName('a');
+    for (var j = 0; j < linkList.length; j++) {
+      if (linkList[j].innerHTML === "") {
+        linkList[j].setAttribute('aria-hidden', 'true');
+      }
+    }
+  }
+});
+</script>
 
 
 
@@ -62,7 +78,7 @@ code span.ot { color: #007020; }
 <div class="cover-card table-cell table-middle">
 <span class="author_name">coverm cluster usage</span>
 <span class="author_bio mbm">Ben Woodcroft, Centre for Microbiome Research, Queensland University of Technology</span>
-<span class="author_bio mbm">2024-01-18 (coverm 0.7.0)</span>
+<span class="author_bio mbm">2026-01-20 (coverm 0.9.0)</span>
 </div>
 </div>
 </div>
@@ -89,7 +105,7 @@ code span.ot { color: #007020; }
 <article class="post-content">
 <div id="name" class="section level1">
 <h1>NAME</h1>
-<p>CoverM cluster - Cluster genome FASTA files by average nucleotide identity (version 0.7.0)</p>
+<p>CoverM cluster - Cluster genome FASTA files by average nucleotide identity (version 0.9.0)</p>
 </div>
 <div id="synopsis" class="section level1">
 <h1>SYNOPSIS</h1>
@@ -109,7 +125,7 @@ code span.ot { color: #007020; }
 </dl>
 <!-- -->
 <dl>
-<dt><strong>d</strong>, <strong>--genome-fasta-directory</strong> <em>PATH</em></dt>
+<dt><strong>-d</strong>, <strong>--genome-fasta-directory</strong> <em>PATH</em></dt>
 <dd><p>Directory containing FASTA files of each genome.</p>
 </dd>
 </dl>
@@ -162,13 +178,19 @@ code span.ot { color: #007020; }
 <h1>CLUSTERING PARAMETERS</h1>
 <dl>
 <dt><strong>--ani</strong> <em>FLOAT</em></dt>
-<dd><p>Overall ANI level to dereplicate at with FastANI. [default: <code>95</code>]</p>
+<dd><p>Overall ANI level to dereplicate at with the primary clusterer. [default: <code>95</code>]</p>
 </dd>
 </dl>
 <!-- -->
 <dl>
 <dt><strong>--min-aligned-fraction</strong> <em>FLOAT</em></dt>
 <dd><p>Min aligned fraction of two genomes for clustering. [default: <code>15</code>]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--small-genomes</strong></dt>
+<dd><p>Use small-genomes settings in skani calculation. Recommended for sequences &lt; 20kb.</p>
 </dd>
 </dl>
 <!-- -->
@@ -208,7 +230,7 @@ code span.ot { color: #007020; }
 </table>
 <dl>
 <dt><strong>--precluster-ani</strong> <em>FLOAT</em></dt>
-<dd><p>Require at least this dashing-derived ANI for preclustering and to avoid FastANI on distant lineages within preclusters. [default: <code>90</code>]</p>
+<dd><p>Require at least this precluster-derived ANI for preclustering and to avoid primary clustering on distant lineages within preclusters. [default: <code>90</code>]</p>
 </dd>
 </dl>
 <!-- -->
@@ -221,6 +243,24 @@ code span.ot { color: #007020; }
 <dl>
 <dt><strong>--cluster-method</strong> <em>NAME</em></dt>
 <dd><p>method of calculating ANI. &#39;<code>fastani</code>&#39; for FastANI, &#39;<code>skani</code>&#39; for Skani. [default: <code>skani</code>]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--cluster-contigs</strong></dt>
+<dd><p>Cluster contigs within a fasta file instead of genomes. When used, either --small-contigs or --large-contigs must be specified.</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--small-contigs</strong></dt>
+<dd><p>Use small-genomes settings in skani when clustering contigs. Recommended for contigs &lt; 20kb. Mutually exclusive with --large-contigs.</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--large-contigs</strong></dt>
+<dd><p>Do not use small-genomes settings in skani when clustering contigs. Recommended for contigs &gt;= 20kb. Mutually exclusive with --small-contigs.</p>
 </dd>
 </dl>
 </div>

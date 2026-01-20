@@ -28,6 +28,22 @@ document.addEventListener('DOMContentLoaded', function(e) {
   }
 });
 </script>
+<script>// Hide empty <a> tag within highlighted CodeBlock for screen reader accessibility (see https://github.com/jgm/pandoc/issues/6352#issuecomment-626106786) -->
+// v0.0.1
+// Written by JooYoung Seo (jooyoung@psu.edu) and Atsushi Yasumoto on June 1st, 2020.
+
+document.addEventListener('DOMContentLoaded', function() {
+  const codeList = document.getElementsByClassName("sourceCode");
+  for (var i = 0; i < codeList.length; i++) {
+    var linkList = codeList[i].getElementsByTagName('a');
+    for (var j = 0; j < linkList.length; j++) {
+      if (linkList[j].innerHTML === "") {
+        linkList[j].setAttribute('aria-hidden', 'true');
+      }
+    }
+  }
+});
+</script>
 
 
 
@@ -62,7 +78,7 @@ code span.ot { color: #007020; }
 <div class="cover-card table-cell table-middle">
 <span class="author_name">coverm genome usage</span>
 <span class="author_bio mbm">Ben Woodcroft, Centre for Microbiome Research, Queensland University of Technology</span>
-<span class="author_bio mbm">2024-01-18 (coverm 0.7.0)</span>
+<span class="author_bio mbm">2026-01-20 (coverm 0.9.0)</span>
 </div>
 </div>
 </div>
@@ -95,7 +111,7 @@ code span.ot { color: #007020; }
 <article class="post-content">
 <div id="name" class="section level1">
 <h1>NAME</h1>
-<p>coverm genome - Calculate read coverage per-genome (version 0.7.0)</p>
+<p>coverm genome - Calculate read coverage per-genome (version 0.9.0)</p>
 </div>
 <div id="synopsis" class="section level1">
 <h1>SYNOPSIS</h1>
@@ -154,7 +170,7 @@ code span.ot { color: #007020; }
 </dl>
 <!-- -->
 <dl>
-<dt><strong>d</strong>, <strong>--genome-fasta-directory</strong> <em>PATH</em></dt>
+<dt><strong>-d</strong>, <strong>--genome-fasta-directory</strong> <em>PATH</em></dt>
 <dd><p>Directory containing FASTA files of each genome.</p>
 </dd>
 </dl>
@@ -173,7 +189,7 @@ code span.ot { color: #007020; }
 <!-- -->
 <dl>
 <dt><strong>-r</strong>, <strong>--reference</strong> <em>PATH</em></dt>
-<dd><p>FASTA file of contigs e.g. concatenated genomes or metagenome assembly, or minimap2 index (with <code>--minimap2-reference-is-index</code>), strobealign index (with <code>--strobealign-use-index</code>), or BWA index stem (with <code>-p bwa-mem/bwa-mem2</code>). If multiple reference FASTA files are provided and <code>--sharded</code> is specified, then reads will be mapped to references separately as sharded BAMs. <strong>NOTE</strong> : If genomic FASTA files are specified elsewhere (e.g. with <code>--genome-fasta-files</code> or <code>--genome-fasta-directory</code>), then <code>--reference</code> is not needed as a reference FASTA file can be derived by concatenating input genomes. In these situations, <code>--reference</code> can be optionally specified if an alternate reference sequence set is desired.</p>
+<dd><p>FASTA file of contigs e.g. concatenated genomes or metagenome assembly (gzip or uncompressed), or minimap2 index (with <code>--minimap2-reference-is-index</code>), strobealign index (with <code>--strobealign-use-index</code>), or BWA index stem (with <code>-p bwa-mem/bwa-mem2</code>). If multiple reference FASTA files are provided and <code>--sharded</code> is specified, then reads will be mapped to references separately as sharded BAMs. <strong>NOTE</strong> : If genomic FASTA files are specified elsewhere (e.g. with <code>--genome-fasta-files</code> or <code>--genome-fasta-directory</code>), then <code>--reference</code> is not needed as a reference FASTA file can be derived by concatenating input genomes. In these situations, <code>--reference</code> can be optionally specified if an alternate reference sequence set is desired.</p>
 </dd>
 </dl>
 <!-- -->
@@ -205,7 +221,7 @@ code span.ot { color: #007020; }
 <h1>DEREPLICATION / GENOME CLUSTERING</h1>
 <dl>
 <dt><strong>--dereplicate</strong></dt>
-<dd><p>Do genome dereplication via average nucleotide identity (ANI) - choose a genome to represent all within a small distance, using Dashing for preclustering and FastANI for final ANI calculation. When this flag is used, dereplication occurs transparently through the Galah method (<a href="https://github.com/wwood/galah" class="uri">https://github.com/wwood/galah</a>) [default: not set]</p>
+<dd><p>Do genome dereplication via average nucleotide identity (ANI) - choose a genome to represent all within a small distance, using skani for clustering by default. When this flag is used, dereplication occurs transparently through the Galah method (<a href="https://github.com/wwood/galah" class="uri">https://github.com/wwood/galah</a>) [default: not set]</p>
 </dd>
 </dl>
 <!-- -->
@@ -241,13 +257,19 @@ code span.ot { color: #007020; }
 <!-- -->
 <dl>
 <dt><strong>--dereplication-ani</strong> <em>FLOAT</em></dt>
-<dd><p>Overall ANI level to dereplicate at with FastANI. [default: <code>95</code>]</p>
+<dd><p>Overall ANI level to dereplicate at with the primary clusterer. [default: <code>95</code>]</p>
 </dd>
 </dl>
 <!-- -->
 <dl>
 <dt><strong>--dereplication-aligned-fraction</strong> <em>FLOAT</em></dt>
 <dd><p>Min aligned fraction of two genomes for clustering. [default: <code>15</code>]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--dereplication-small-genomes</strong></dt>
+<dd><p>Use small-genomes settings in skani calculation. Recommended for sequences &lt; 20kb.</p>
 </dd>
 </dl>
 <!-- -->
@@ -287,7 +309,7 @@ code span.ot { color: #007020; }
 </table>
 <dl>
 <dt><strong>--dereplication-prethreshold-ani</strong> <em>FLOAT</em></dt>
-<dd><p>Require at least this dashing-derived ANI for preclustering and to avoid FastANI on distant lineages within preclusters. [default: <code>90</code>]</p>
+<dd><p>Require at least this precluster-derived ANI for preclustering and to avoid primary clustering on distant lineages within preclusters. [default: <code>90</code>]</p>
 </dd>
 </dl>
 <!-- -->
@@ -300,6 +322,24 @@ code span.ot { color: #007020; }
 <dl>
 <dt><strong>--dereplication-cluster-method</strong> <em>NAME</em></dt>
 <dd><p>method of calculating ANI. &#39;<code>fastani</code>&#39; for FastANI, &#39;<code>skani</code>&#39; for Skani. [default: <code>skani</code>]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--dereplication-cluster-contigs</strong></dt>
+<dd><p>Cluster contigs within a fasta file instead of genomes. When used, either --small-contigs or --large-contigs must be specified.</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--dereplication-small-contigs</strong></dt>
+<dd><p>Use small-genomes settings in skani when clustering contigs. Recommended for contigs &lt; 20kb. Mutually exclusive with --large-contigs.</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--dereplication-large-contigs</strong></dt>
+<dd><p>Do not use small-genomes settings in skani when clustering contigs. Recommended for contigs &gt;= 20kb. Mutually exclusive with --small-contigs.</p>
 </dd>
 </dl>
 <!-- -->
@@ -345,7 +385,7 @@ code span.ot { color: #007020; }
 <h1>MAPPING ALGORITHM OPTIONS</h1>
 <p><strong>-p</strong>, <strong>--mapper</strong> <em>NAME</em></p>
 <table>
-<caption>Underlying mapping software used [default: <code>minimap2-sr</code>]. One of:</caption>
+<caption>Underlying mapping software used [default: <code>strobealign</code>]. One of:</caption>
 <thead>
 <tr class="header">
 <th align="left">name</th>
@@ -354,8 +394,8 @@ code span.ot { color: #007020; }
 </thead>
 <tbody>
 <tr class="odd">
-<td align="left"><code>minimap2-sr</code></td>
-<td align="left">minimap2 with &#39;<code>-x sr</code>&#39; option</td>
+<td align="left"><code>strobealign</code></td>
+<td align="left">strobealign using default parameters</td>
 </tr>
 <tr class="even">
 <td align="left"><code>bwa-mem</code></td>
@@ -364,6 +404,14 @@ code span.ot { color: #007020; }
 <tr class="odd">
 <td align="left"><code>bwa-mem2</code></td>
 <td align="left">bwa-mem2 using default parameters</td>
+</tr>
+<tr class="even">
+<td align="left"><code>minimap2-sr</code></td>
+<td align="left">minimap2 with &#39;<code>-x sr</code>&#39; option</td>
+</tr>
+<tr class="odd">
+<td align="left"><code>minimap2-lr-hq</code></td>
+<td align="left">minimap2 with &#39;<code>-x lr:hq</code>&#39; option (recommended for Oxford Nanopore R10+ reads)</td>
 </tr>
 <tr class="even">
 <td align="left"><code>minimap2-ont</code></td>
@@ -452,6 +500,12 @@ code span.ot { color: #007020; }
 </dl>
 <!-- -->
 <dl>
+<dt><strong>--min-mapq</strong> <em>INT</em></dt>
+<dd><p>Exclude reads with a mapping quality below this value. An INT between 0 and 254. When thresholding pairs, both reads are excluded if either has a MAPQ below this value. If 0, reads with MAPQ of 255 (mapping quality unavailable) are excluded. [default: <code>not set</code>]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
 <dt><strong>--proper-pairs-only</strong></dt>
 <dd><p>Require reads to be mapped as proper pairs. [default: not set]</p>
 </dd>
@@ -498,26 +552,30 @@ code span.ot { color: #007020; }
 <td align="left">Histogram of coverage depths</td>
 </tr>
 <tr class="odd">
+<td align="left"><code>covered_fraction</code></td>
+<td align="left">Proportion of bases covered by 1 or more reads</td>
+</tr>
+<tr class="even">
 <td align="left"><code>covered_bases</code></td>
 <td align="left">Number of bases covered by 1 or more reads</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left"><code>variance</code></td>
 <td align="left">Variance of coverage depths</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left"><code>length</code></td>
 <td align="left">Length of each genome in base pairs</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left"><code>count</code></td>
 <td align="left">Number of reads aligned to each genome. Note that supplementary alignments are not counted.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left"><code>reads_per_base</code></td>
 <td align="left">Number of reads aligned divided by the length of the genome</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left"><code>anir</code></td>
 <td align="left">Average BLAST-like identity of mapped reads</td>
 </tr>
@@ -576,14 +634,26 @@ code span.ot { color: #007020; }
 </dl>
 <!-- -->
 <dl>
-<dt><strong>--bam-file-cache-directory</strong> <em>DIRECTORY</em></dt>
-<dd><p>Output BAM files generated during alignment to this directory. The directory may or may not exist. Note that BAM files in this directory contain all mappings, including those that later are excluded by alignment thresholding (e.g. --min-read-percent-identity) or genome-wise thresholding (e.g. --min-covered-fraction). [default: not used]</p>
+<dt><strong>--cache-unfiltered-bam-directory</strong> <em>DIRECTORY</em></dt>
+<dd><p>Output BAM files generated during alignment to this directory (--bam-file-cache-directory is an alias). The directory may or may not exist. Note that BAM files in this directory contain all mappings, including those that later are excluded by alignment thresholding (e.g. --min-read-percent-identity) or genome-wise thresholding (e.g. --min-covered-fraction). [default: not used]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--cache-unfiltered-bam-files</strong> <em>FILE</em></dt>
+<dd><p>Output BAM files generated during alignment to these files. The order of files should correspond to: single-ended reads (-s), -1/-2, --coupled, --interleaved. [default: not used]</p>
 </dd>
 </dl>
 <!-- -->
 <dl>
 <dt><strong>--discard-unmapped</strong></dt>
 <dd><p>Exclude unmapped reads from cached BAM files. [default: not set]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--use-cram</strong></dt>
+<dd><p>Output cached alignment files in CRAM format instead of BAM. CRAM files are ~50% smaller but REQUIRE the reference FASTA for reading. WARNING: Do not delete reference files after creating CRAM cache. Only applies with --cache-unfiltered-bam-directory or --cache-unfiltered-bam-files. [default: not set]</p>
 </dd>
 </dl>
 </div>

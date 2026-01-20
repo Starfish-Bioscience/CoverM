@@ -28,6 +28,22 @@ document.addEventListener('DOMContentLoaded', function(e) {
   }
 });
 </script>
+<script>// Hide empty <a> tag within highlighted CodeBlock for screen reader accessibility (see https://github.com/jgm/pandoc/issues/6352#issuecomment-626106786) -->
+// v0.0.1
+// Written by JooYoung Seo (jooyoung@psu.edu) and Atsushi Yasumoto on June 1st, 2020.
+
+document.addEventListener('DOMContentLoaded', function() {
+  const codeList = document.getElementsByClassName("sourceCode");
+  for (var i = 0; i < codeList.length; i++) {
+    var linkList = codeList[i].getElementsByTagName('a');
+    for (var j = 0; j < linkList.length; j++) {
+      if (linkList[j].innerHTML === "") {
+        linkList[j].setAttribute('aria-hidden', 'true');
+      }
+    }
+  }
+});
+</script>
 
 
 
@@ -62,7 +78,7 @@ code span.ot { color: #007020; }
 <div class="cover-card table-cell table-middle">
 <span class="author_name">coverm make usage</span>
 <span class="author_bio mbm">Ben Woodcroft, Centre for Microbiome Research, Queensland University of Technology</span>
-<span class="author_bio mbm">2024-01-18 (coverm 0.7.0)</span>
+<span class="author_bio mbm">2026-01-20 (coverm 0.9.0)</span>
 </div>
 </div>
 </div>
@@ -91,7 +107,7 @@ code span.ot { color: #007020; }
 <article class="post-content">
 <div id="name" class="section level1">
 <h1>NAME</h1>
-<p>coverm make - Generate BAM files through mapping (version: 0.7.0)</p>
+<p>coverm make - Generate BAM files through mapping (version: 0.9.0)</p>
 </div>
 <div id="synopsis" class="section level1">
 <h1>SYNOPSIS</h1>
@@ -137,7 +153,7 @@ code span.ot { color: #007020; }
 <h1>REFERENCE</h1>
 <dl>
 <dt><strong>-r</strong>, <strong>--reference</strong> <em>PATH</em></dt>
-<dd><p>FASTA file of contigs e.g. concatenated genomes or metagenome assembly, or minimap2 index (with <code>--minimap2-reference-is-index</code>), strobealign index (with <code>--strobealign-use-index</code>), or BWA index stem (with <code>-p bwa-mem/bwa-mem2</code>). [required]</p>
+<dd><p>FASTA file of contigs e.g. concatenated genomes or metagenome assembly, or minimap2 index (with <code>--minimap2-reference-is-index</code>), strobealign index (with <code>--strobealign-use-index</code>), or BWA index stem (with <code>-p bwa-mem/bwa-mem2</code>). May be gzip-compressed. [required]</p>
 </dd>
 </dl>
 </div>
@@ -145,7 +161,7 @@ code span.ot { color: #007020; }
 <h1>MAPPING ALGORITHM OPTIONS</h1>
 <p><strong>-p</strong>, <strong>--mapper</strong> <em>NAME</em></p>
 <table>
-<caption>Underlying mapping software used [default: <code>minimap2-sr</code>]. One of:</caption>
+<caption>Underlying mapping software used [default: <code>strobealign</code>]. One of:</caption>
 <thead>
 <tr class="header">
 <th align="left">name</th>
@@ -154,8 +170,8 @@ code span.ot { color: #007020; }
 </thead>
 <tbody>
 <tr class="odd">
-<td align="left"><code>minimap2-sr</code></td>
-<td align="left">minimap2 with &#39;<code>-x sr</code>&#39; option</td>
+<td align="left"><code>strobealign</code></td>
+<td align="left">strobealign using default parameters</td>
 </tr>
 <tr class="even">
 <td align="left"><code>bwa-mem</code></td>
@@ -164,6 +180,14 @@ code span.ot { color: #007020; }
 <tr class="odd">
 <td align="left"><code>bwa-mem2</code></td>
 <td align="left">bwa-mem2 using default parameters</td>
+</tr>
+<tr class="even">
+<td align="left"><code>minimap2-sr</code></td>
+<td align="left">minimap2 with &#39;<code>-x sr</code>&#39; option</td>
+</tr>
+<tr class="odd">
+<td align="left"><code>minimap2-lr-hq</code></td>
+<td align="left">minimap2 with &#39;<code>-x lr:hq</code>&#39; option (recommended for Oxford Nanopore R10+ reads)</td>
 </tr>
 <tr class="even">
 <td align="left"><code>minimap2-ont</code></td>

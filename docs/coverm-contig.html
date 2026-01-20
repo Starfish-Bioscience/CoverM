@@ -28,6 +28,22 @@ document.addEventListener('DOMContentLoaded', function(e) {
   }
 });
 </script>
+<script>// Hide empty <a> tag within highlighted CodeBlock for screen reader accessibility (see https://github.com/jgm/pandoc/issues/6352#issuecomment-626106786) -->
+// v0.0.1
+// Written by JooYoung Seo (jooyoung@psu.edu) and Atsushi Yasumoto on June 1st, 2020.
+
+document.addEventListener('DOMContentLoaded', function() {
+  const codeList = document.getElementsByClassName("sourceCode");
+  for (var i = 0; i < codeList.length; i++) {
+    var linkList = codeList[i].getElementsByTagName('a');
+    for (var j = 0; j < linkList.length; j++) {
+      if (linkList[j].innerHTML === "") {
+        linkList[j].setAttribute('aria-hidden', 'true');
+      }
+    }
+  }
+});
+</script>
 
 
 
@@ -62,7 +78,7 @@ code span.ot { color: #007020; }
 <div class="cover-card table-cell table-middle">
 <span class="author_name">coverm contig usage</span>
 <span class="author_bio mbm">Ben Woodcroft, Centre for Microbiome Research, Queensland University of Technology</span>
-<span class="author_bio mbm">2024-01-18 (coverm 0.7.0)</span>
+<span class="author_bio mbm">2026-01-20 (coverm 0.9.0)</span>
 </div>
 </div>
 </div>
@@ -94,7 +110,7 @@ code span.ot { color: #007020; }
 <article class="post-content">
 <div id="name" class="section level1">
 <h1>NAME</h1>
-<p>coverm contig - Calculate read coverage per-contig (version 0.7.0)</p>
+<p>coverm contig - Calculate read coverage per-contig (version 0.9.0)</p>
 </div>
 <div id="synopsis" class="section level1">
 <h1>SYNOPSIS</h1>
@@ -148,7 +164,7 @@ code span.ot { color: #007020; }
 <h1>REFERENCE</h1>
 <dl>
 <dt><strong>-r</strong>, <strong>--reference</strong> <em>PATH</em></dt>
-<dd><p>FASTA file of contigs e.g. concatenated genomes or metagenome assembly, or minimap2 index (with <code>--minimap2-reference-is-index</code>), strobealign index (with <code>--strobealign-use-index</code>), or BWA index stem (with <code>-p bwa-mem/bwa-mem2</code>). If multiple references FASTA files are provided and <code>--sharded</code> is specified, then reads will be mapped to references separately as sharded BAMs. [required unless <code>-b/--bam-files</code> is specified]</p>
+<dd><p>FASTA file of contigs e.g. concatenated genomes or metagenome assembly (gzip or uncompressed), or minimap2 index (with <code>--minimap2-reference-is-index</code>), strobealign index (with <code>--strobealign-use-index</code>), or BWA index stem (with <code>-p bwa-mem/bwa-mem2</code>). If multiple references FASTA files are provided and <code>--sharded</code> is specified, then reads will be mapped to references separately as sharded BAMs. [required unless <code>-b/--bam-files</code> is specified]</p>
 </dd>
 </dl>
 </div>
@@ -164,7 +180,7 @@ code span.ot { color: #007020; }
 <h1>MAPPING ALGORITHM OPTIONS</h1>
 <p><strong>-p</strong>, <strong>--mapper</strong> <em>NAME</em></p>
 <table>
-<caption>Underlying mapping software used [default: <code>minimap2-sr</code>]. One of:</caption>
+<caption>Underlying mapping software used [default: <code>strobealign</code>]. One of:</caption>
 <thead>
 <tr class="header">
 <th align="left">name</th>
@@ -173,8 +189,8 @@ code span.ot { color: #007020; }
 </thead>
 <tbody>
 <tr class="odd">
-<td align="left"><code>minimap2-sr</code></td>
-<td align="left">minimap2 with &#39;<code>-x sr</code>&#39; option</td>
+<td align="left"><code>strobealign</code></td>
+<td align="left">strobealign using default parameters</td>
 </tr>
 <tr class="even">
 <td align="left"><code>bwa-mem</code></td>
@@ -183,6 +199,14 @@ code span.ot { color: #007020; }
 <tr class="odd">
 <td align="left"><code>bwa-mem2</code></td>
 <td align="left">bwa-mem2 using default parameters</td>
+</tr>
+<tr class="even">
+<td align="left"><code>minimap2-sr</code></td>
+<td align="left">minimap2 with &#39;<code>-x sr</code>&#39; option</td>
+</tr>
+<tr class="odd">
+<td align="left"><code>minimap2-lr-hq</code></td>
+<td align="left">minimap2 with &#39;<code>-x lr:hq</code>&#39; option (recommended for Oxford Nanopore R10+ reads)</td>
 </tr>
 <tr class="even">
 <td align="left"><code>minimap2-ont</code></td>
@@ -271,6 +295,12 @@ code span.ot { color: #007020; }
 </dl>
 <!-- -->
 <dl>
+<dt><strong>--min-mapq</strong> <em>INT</em></dt>
+<dd><p>Exclude reads with a mapping quality below this value. An INT between 0 and 254. When thresholding pairs, both reads are excluded if either has a MAPQ below this value. If 0, reads with MAPQ of 255 (mapping quality unavailable) are excluded. [default: <code>not set</code>]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
 <dt><strong>--proper-pairs-only</strong></dt>
 <dd><p>Require reads to be mapped as proper pairs. [default: not set]</p>
 </dd>
@@ -309,8 +339,16 @@ code span.ot { color: #007020; }
 <td align="left">Average number of aligned reads overlapping each position after removing the most deeply and shallow-ly covered positions. See <code>--trim-min</code>/<code>--trim-max</code> to adjust.</td>
 </tr>
 <tr class="odd">
+<td align="left"><code>strobealign-aemb</code></td>
+<td align="left">Mean coverage as estimated by strobealign --aemb, which is faster than the <code>mean</code> method, giving similar but not identical values. See <a href="https://github.com/ksahlin/strobealign" class="uri">https://github.com/ksahlin/strobealign</a> for details. Cannot currently be used with other methods.</td>
+</tr>
+<tr class="even">
 <td align="left"><code>coverage_histogram</code></td>
 <td align="left">Histogram of coverage depths</td>
+</tr>
+<tr class="odd">
+<td align="left"><code>covered_fraction</code></td>
+<td align="left">Proportion of bases covered by 1 or more reads</td>
 </tr>
 <tr class="even">
 <td align="left"><code>covered_bases</code></td>
@@ -340,11 +378,11 @@ code span.ot { color: #007020; }
 <td align="left"><code>anir</code></td>
 <td align="left">Average BLAST-like identity of mapped reads</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td align="left"><code>rpkm</code></td>
 <td align="left">Reads mapped per kilobase of contig, per million mapped reads</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td align="left"><code>tpm</code></td>
 <td align="left">Transcripts Per Million as described in Li et al 2010 <a href="https://doi.org/10.1093/bioinformatics/btp692" class="uri">https://doi.org/10.1093/bioinformatics/btp692</a></td>
 </tr>
@@ -395,14 +433,26 @@ code span.ot { color: #007020; }
 </dl>
 <!-- -->
 <dl>
-<dt><strong>--bam-file-cache-directory</strong> <em>DIRECTORY</em></dt>
-<dd><p>Output BAM files generated during alignment to this directory. The directory may or may not exist. Note that BAM files in this directory contain all mappings, including those that later are excluded by alignment thresholding (e.g. --min-read-percent-identity) or genome-wise thresholding (e.g. --min-covered-fraction). [default: not used]</p>
+<dt><strong>--cache-unfiltered-bam-directory</strong> <em>DIRECTORY</em></dt>
+<dd><p>Output BAM files generated during alignment to this directory (--bam-file-cache-directory is an alias). The directory may or may not exist. Note that BAM files in this directory contain all mappings, including those that later are excluded by alignment thresholding (e.g. --min-read-percent-identity) or genome-wise thresholding (e.g. --min-covered-fraction). [default: not used]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--cache-unfiltered-bam-files</strong> <em>FILE</em></dt>
+<dd><p>Output BAM files generated during alignment to these files. The order of files should correspond to: single-ended reads (-s), -1/-2, --coupled, --interleaved. [default: not used]</p>
 </dd>
 </dl>
 <!-- -->
 <dl>
 <dt><strong>--discard-unmapped</strong></dt>
 <dd><p>Exclude unmapped reads from cached BAM files. [default: not set]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--use-cram</strong></dt>
+<dd><p>Output cached alignment files in CRAM format instead of BAM. CRAM files are ~50% smaller but REQUIRE the reference FASTA for reading. WARNING: Do not delete reference files after creating CRAM cache. Only applies with --cache-unfiltered-bam-directory or --cache-unfiltered-bam-files. [default: not set]</p>
 </dd>
 </dl>
 </div>
@@ -476,7 +526,7 @@ code span.ot { color: #007020; }
 <dd><p><strong>$ coverm contig --coupled read1.fastq.gz read2.fastq.gz --reference assembly.fna</strong></p>
 </dd>
 <dt>Calculate MetaBAT adjusted coverage from a sorted BAM file, saving the unfiltered BAM files in the saved_bam_files folder</dt>
-<dd><p><strong>$ coverm contig --method metabat --bam-files my.bam --bam-file-cache-directory saved_bam_files</strong></p>
+<dd><p><strong>$ coverm contig --method metabat --bam-files my.bam --cache-unfiltered-bam-directory saved_bam_files</strong></p>
 </dd>
 </dl>
 </div>

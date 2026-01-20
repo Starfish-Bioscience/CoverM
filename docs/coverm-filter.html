@@ -28,6 +28,22 @@ document.addEventListener('DOMContentLoaded', function(e) {
   }
 });
 </script>
+<script>// Hide empty <a> tag within highlighted CodeBlock for screen reader accessibility (see https://github.com/jgm/pandoc/issues/6352#issuecomment-626106786) -->
+// v0.0.1
+// Written by JooYoung Seo (jooyoung@psu.edu) and Atsushi Yasumoto on June 1st, 2020.
+
+document.addEventListener('DOMContentLoaded', function() {
+  const codeList = document.getElementsByClassName("sourceCode");
+  for (var i = 0; i < codeList.length; i++) {
+    var linkList = codeList[i].getElementsByTagName('a');
+    for (var j = 0; j < linkList.length; j++) {
+      if (linkList[j].innerHTML === "") {
+        linkList[j].setAttribute('aria-hidden', 'true');
+      }
+    }
+  }
+});
+</script>
 
 
 
@@ -62,7 +78,7 @@ code span.ot { color: #007020; }
 <div class="cover-card table-cell table-middle">
 <span class="author_name">coverm filter usage</span>
 <span class="author_bio mbm">Ben Woodcroft, Centre for Microbiome Research, Queensland University of Technology</span>
-<span class="author_bio mbm">2024-01-18 (coverm 0.7.0)</span>
+<span class="author_bio mbm">2026-01-20 (coverm 0.9.0)</span>
 </div>
 </div>
 </div>
@@ -89,7 +105,7 @@ code span.ot { color: #007020; }
 <article class="post-content">
 <div id="name" class="section level1">
 <h1>NAME</h1>
-<p>coverm filter - Threshold alignments with insufficient identity (version 0.7.0)</p>
+<p>coverm filter - Threshold alignments with insufficient identity (version 0.9.0)</p>
 </div>
 <div id="synopsis" class="section level1">
 <h1>SYNOPSIS</h1>
@@ -192,6 +208,12 @@ code span.ot { color: #007020; }
 <dl>
 <dt><strong>--min-read-aligned-percent-pair</strong> <em>FLOAT</em></dt>
 <dd><p>Exclude reads by percent aligned bases e.g. 95 means 95% of the read&#39;s bases must be aligned. Implies --proper-pairs-only. [default: <code>0</code>]</p>
+</dd>
+</dl>
+<!-- -->
+<dl>
+<dt><strong>--min-mapq</strong> <em>INT</em></dt>
+<dd><p>Exclude reads with a mapping quality below this value. An INT between 0 and 254. When thresholding pairs, both reads are excluded if either has a MAPQ below this value. If 0, reads with MAPQ of 255 (mapping quality unavailable) are excluded. [default: <code>not set</code>]</p>
 </dd>
 </dl>
 <!-- -->
