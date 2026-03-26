@@ -1557,3 +1557,138 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build an ups_and_downs vector from (start, end, depth_change) triples.
+    /// Each triple adds +depth_change at start and -depth_change at end.
+    fn make_ups_and_downs(len: usize, regions: &[(usize, usize, i32)]) -> Vec<i32> {
+        let mut v = vec![0i32; len];
+        for &(start, end, dc) in regions {
+            v[start] += dc;
+            if end < len {
+                v[end] -= dc;
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn test_uniform_coverage() {
+        // 100bp contig, covered at 10x everywhere, no exclusion
+        let ud = make_ups_and_downs(100, &[(0, 100, 10)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.total_internal_gap_bases, 0);
+        assert_eq!(result.max_internal_gap, 0);
+        assert_eq!(result.analysed_contig_length, 100);
+        assert_eq!(result.internal_span, 100);
+        assert_eq!(result.num_covered_bases, 100);
+    }
+
+    #[test]
+    fn test_three_islands() {
+        // 100bp contig, 3 islands: [10..30), [50..70), [80..95)
+        // Gaps: [30..50) = 20bp, [70..80) = 10bp
+        let ud = make_ups_and_downs(100, &[(10, 30, 5), (50, 70, 5), (80, 95, 5)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 3);
+        assert_eq!(result.total_internal_gap_bases, 30); // 20 + 10
+        assert_eq!(result.max_internal_gap, 20);
+        // internal_span: from pos 10 to pos 94 = 85
+        assert_eq!(result.internal_span, 85);
+        assert_eq!(result.num_covered_bases, 55); // 20 + 20 + 15
+    }
+
+    #[test]
+    fn test_no_coverage() {
+        let ud = vec![0i32; 100];
+        assert!(spatial_scan(&ud, 0, 1).is_none());
+    }
+
+    #[test]
+    fn test_contig_too_short() {
+        let ud = vec![0i32; 10];
+        // exclusion = 6, 2*6 = 12 > 10
+        assert!(spatial_scan(&ud, 6, 1).is_none());
+    }
+
+    #[test]
+    fn test_prefix_suffix_not_gaps() {
+        // 100bp contig, coverage only in the middle: [30..70)
+        // Prefix [0..30) and suffix [70..100) should not be gaps
+        let ud = make_ups_and_downs(100, &[(30, 70, 5)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.total_internal_gap_bases, 0);
+        assert_eq!(result.max_internal_gap, 0);
+        assert_eq!(result.internal_span, 40); // 30..69 inclusive = 40
+    }
+
+    #[test]
+    fn test_min_island_length_filters_micro_islands() {
+        // 200bp contig, 3 segments: [10..20)=10bp, [50..60)=10bp, [100..180)=80bp
+        // With min_island_length=50, first two are micro-islands
+        let ud = make_ups_and_downs(200, &[(10, 20, 5), (50, 60, 5), (100, 180, 5)]);
+        let result = spatial_scan(&ud, 0, 50).unwrap();
+        assert_eq!(result.n_islands, 1); // only the 80bp island survives
+        assert_eq!(result.total_internal_gap_bases, 0); // no gap between valid islands
+        assert_eq!(result.max_internal_gap, 0);
+        assert_eq!(result.internal_span, 80); // just the one island
+    }
+
+    #[test]
+    fn test_all_micro_islands_returns_none() {
+        // 100bp contig, all segments < min_island_length
+        let ud = make_ups_and_downs(100, &[(10, 15, 5), (50, 55, 5), (80, 85, 5)]);
+        assert!(spatial_scan(&ud, 0, 50).is_none());
+    }
+
+    #[test]
+    fn test_single_island_with_micro_islands_around() {
+        // 200bp, micro-island at [10..15), valid island at [50..150), micro at [170..175)
+        let ud = make_ups_and_downs(200, &[(10, 15, 5), (50, 150, 5), (170, 175, 5)]);
+        let result = spatial_scan(&ud, 0, 10).unwrap();
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.total_internal_gap_bases, 0);
+        assert_eq!(result.gap_fraction(), 0.0);
+    }
+
+    #[test]
+    fn test_contig_end_exclusion() {
+        // 100bp contig, coverage everywhere, exclusion=10
+        // Analysed region: [10..89] = 80 positions
+        let ud = make_ups_and_downs(100, &[(0, 100, 10)]);
+        let result = spatial_scan(&ud, 10, 1).unwrap();
+        assert_eq!(result.analysed_contig_length, 80);
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.internal_span, 80);
+    }
+
+    #[test]
+    fn test_two_islands_with_exclusion() {
+        // 100bp contig, exclusion=5. Coverage at [10..30) and [60..80).
+        // Analysed region: [5..94]. Both islands are within.
+        // Gap: [30..60) = 30bp
+        let ud = make_ups_and_downs(100, &[(10, 30, 5), (60, 80, 5)]);
+        let result = spatial_scan(&ud, 5, 1).unwrap();
+        assert_eq!(result.n_islands, 2);
+        assert_eq!(result.total_internal_gap_bases, 30);
+        assert_eq!(result.max_internal_gap, 30);
+        // span: 10..79 = 70
+        assert_eq!(result.internal_span, 70);
+    }
+
+    // Helper method for test convenience
+    impl SpatialScanResult {
+        fn gap_fraction(&self) -> f32 {
+            if self.internal_span == 0 {
+                0.0
+            } else {
+                self.total_internal_gap_bases as f32 / self.internal_span as f32
+            }
+        }
+    }
+}
