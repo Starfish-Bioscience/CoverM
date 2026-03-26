@@ -1241,16 +1241,30 @@ fn run_genome<
     let single_genome = m.get_flag("single-genome");
     let threads = *m.get_one::<u16>("threads").unwrap();
     let reads_mapped = match separator.is_some() || single_genome {
-        true => coverm::genome::mosdepth_genome_coverage(
-            bam_generators,
-            separator.unwrap(),
-            &mut estimators_and_taker.taker,
-            print_zeros,
-            &mut estimators_and_taker.estimators,
-            &flag_filter,
-            single_genome,
-            threads,
-        ),
+        true => {
+            // Set up coverage profile output directory if requested
+            let coverage_profile_dir = m.get_one::<String>("coverage-profile").map(|dir| {
+                let path = std::path::Path::new(dir);
+                if !path.exists() {
+                    std::fs::create_dir_all(path).unwrap_or_else(|e| {
+                        panic!("Failed to create coverage profile directory {}: {}", dir, e)
+                    });
+                }
+                path.to_path_buf()
+            });
+
+            coverm::genome::mosdepth_genome_coverage(
+                bam_generators,
+                separator.unwrap(),
+                &mut estimators_and_taker.taker,
+                print_zeros,
+                &mut estimators_and_taker.estimators,
+                &flag_filter,
+                single_genome,
+                threads,
+                coverage_profile_dir.as_deref(),
+            )
+        }
 
         false => {
             // Set up coverage profile output directory if requested

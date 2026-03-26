@@ -372,6 +372,8 @@ fn print_last_genomes<T: CoverageTaker>(
     split_char: u8,
     header: &rust_htslib::bam::HeaderView,
     tid_to_print_zeros_to: u32,
+    last_tid: u32,
+    profile_writer: &mut Option<CoverageProfileWriter>,
 ) -> bool {
     //    debug!("ups_and_downs {:?}", &ups_and_downs);
     for coverage_estimator in coverage_estimators.iter_mut() {
@@ -381,6 +383,11 @@ fn print_last_genomes<T: CoverageTaker>(
             total_edit_distance_in_current_contig - total_indels_in_current_contig,
             sum_identity_in_current_contig,
         );
+    }
+    // Write BedGraph profile for this contig
+    if let Some(ref mut writer) = profile_writer {
+        let contig_name = str::from_utf8(target_names[last_tid as usize]).unwrap();
+        writer.write_contig(contig_name, ups_and_downs);
     }
 
     // Determine coverage of previous genome
@@ -456,6 +463,7 @@ pub fn mosdepth_genome_coverage<
     flag_filters: &FlagFilter,
     single_genome: bool,
     threads: u16,
+    coverage_profile_dir: Option<&Path>,
 ) -> Vec<ReadsMapped> {
     let mut reads_mapped_vector = vec![];
     debug!(
@@ -469,6 +477,13 @@ pub fn mosdepth_genome_coverage<
         let stoit_name = &(bam_generated.name().to_string());
         debug!("Working on stoit {stoit_name}");
         coverage_taker.start_stoit(stoit_name);
+
+        // Create per-sample BedGraph profile writer if requested
+        let mut profile_writer = coverage_profile_dir.map(|dir| {
+            let path = dir.join(format!("{}.bedgraph.gz", stoit_name));
+            CoverageProfileWriter::new(&path)
+        });
+
         let header = bam_generated.header().clone();
         let target_names = header.target_names();
 
@@ -618,6 +633,12 @@ pub fn mosdepth_genome_coverage<
                                 sum_identity_in_current_contig,
                             );
                         }
+                        // Write BedGraph profile for this contig
+                        if let Some(ref mut writer) = profile_writer {
+                            let contig_name =
+                                str::from_utf8(target_names[last_tid as usize]).unwrap();
+                            writer.write_contig(contig_name, &ups_and_downs);
+                        }
                         // Collect the length of reference sequences from this
                         // genome that had no hits that were just skipped over.
                         debug!("Filling unobserved from {last_tid} to {tid}");
@@ -664,6 +685,8 @@ pub fn mosdepth_genome_coverage<
                             split_char,
                             &header,
                             tid,
+                            last_tid,
+                            &mut profile_writer,
                         );
                         if positive_coverage {
                             num_mapped_reads_total += num_mapped_reads_in_current_genome;
@@ -798,10 +821,17 @@ pub fn mosdepth_genome_coverage<
                 split_char,
                 &header,
                 header.target_count() - 1,
+                last_tid,
+                &mut profile_writer,
             );
             if positive_coverage {
                 num_mapped_reads_total += num_mapped_reads_in_current_genome;
             }
+        }
+
+        // Finalize the BedGraph profile writer (flush bgzf + create tabix index)
+        if let Some(writer) = profile_writer.take() {
+            writer.finish();
         }
 
         let reads_mapped = ReadsMapped {
@@ -995,6 +1025,7 @@ mod tests {
                 &flags,
                 single_genome,
                 1,
+                None,
             );
         }
         assert_eq!(expected, std::fs::read_to_string(tf.path()).unwrap());
@@ -1034,6 +1065,7 @@ mod tests {
                 &flags,
                 single_genome,
                 1,
+                None,
             );
         }
         assert_eq!(expected, std::fs::read_to_string(tf.path()).unwrap());
