@@ -4,7 +4,7 @@ set -e
 # Build script for CoverM containers (Docker and Apptainer)
 # Requires: cargo build --release to be run first
 
-VERSION="0.9.0-cram"
+VERSION="0.10.0-spatial"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "=== Building CoverM $VERSION containers ==="

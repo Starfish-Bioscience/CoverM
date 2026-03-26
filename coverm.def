@@ -3,8 +3,8 @@ From: mambaorg/micromamba:1.5.10-noble
 
 %labels
     Author Starfish-Bioscience
-    Version 0.9.0
-    Description CoverM with CRAM support - Full dependencies
+    Version 0.10.0
+    Description CoverM with CRAM + spatial metrics support
 
 %files
     coverm /usr/local/bin/coverm
@@ -42,12 +42,12 @@ From: mambaorg/micromamba:1.5.10-noble
     strobealign --version
 
 %help
-    CoverM version 0.9.0 with CRAM support
+    CoverM version 0.10.0 with CRAM + spatial metrics support
     Full installation with all dependencies
 
     Available tools:
     - coverm (main tool)
-    - samtools
+    - samtools (+ tabix for BedGraph indexing)
     - minimap2
     - bwa
     - bwa-mem2
@@ -55,15 +55,19 @@ From: mambaorg/micromamba:1.5.10-noble
     - fastani
     - strobealign
 
+    New in 0.10.0:
+    - Spatial coverage metrics: islands_per_mbp, max_gap, gap_fraction
+    - BedGraph coverage profile output (--coverage-profile)
+    - --min-island-length option
+
     Usage:
         apptainer run coverm.sif genome --help
         apptainer exec coverm.sif coverm genome [options]
 
-    Example with CRAM caching:
+    Example with spatial metrics:
         apptainer exec coverm.sif coverm genome \
-            --coupled reads.1.fq.gz reads.2.fq.gz \
-            --genome-fasta-directory genomes/ \
-            --cache-unfiltered-bam-directory cache/ \
-            --use-cram \
-            --discard-unmapped \
-            -o output.tsv
+            -b aligned.bam \
+            --genome-definition genomes.tsv \
+            -m mean covered_fraction islands_per_mbp max_gap gap_fraction \
+            --min-island-length 50 \
+            --coverage-profile profiles/
