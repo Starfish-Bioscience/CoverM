@@ -11,6 +11,14 @@ From: mambaorg/micromamba:1.5.10-noble
     conda.yml /scratch/conda.yml
 
 %post
+    # Install man-db so --full-help works (bird_tool_utils generates roff).
+    # The base image has a stub /usr/bin/man that must be removed first,
+    # and dpkg diversions must be cleared for man-db to install properly.
+    rm -f /usr/bin/man
+    dpkg-divert --quiet --remove --rename /usr/bin/man 2>/dev/null || true
+    apt-get update && apt-get install -y --no-install-recommends man-db && \
+        dpkg --configure -a && \
+        rm -rf /var/lib/apt/lists/*
     micromamba install -y -n base -f /scratch/conda.yml
     micromamba install -y -n base conda-forge::procps-ng
     micromamba env export --name base --explicit > environment.lock
