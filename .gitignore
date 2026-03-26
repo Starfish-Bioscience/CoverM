@@ -18,5 +18,10 @@ issue60
 # Container artifacts (binaries should be in releases, not repo)
 *.sif
 
+# Build artifacts (binaries should be in GitHub Releases, not repo)
+/coverm
+
 # Claude Code
 .claude/
+
+mag_detection/
