@@ -78,6 +78,38 @@ pub enum CoverageEstimator {
         num_reads: u64,
     },
     StrobealignAembEstimator {},
+    IslandsPerMbpEstimator {
+        // Metric accumulators
+        total_islands: u64,
+        covered_contigs_length: u64, // denominator: contigs with ≥1 valid island
+        // Gate accumulators (raw coverage, before min_island_length filtering)
+        observed_contig_length: u64, // all contigs seen (with or without signal)
+        num_covered_bases: u64,      // raw bases at depth>0
+        num_mapped_reads: u64,
+        // Config (immutable after construction)
+        min_fraction_covered_bases: f32,
+        contig_end_exclusion: u64,
+        min_island_length: u64,
+    },
+    MaxGapEstimator {
+        max_gap: u64,
+        observed_contig_length: u64,
+        num_covered_bases: u64,
+        num_mapped_reads: u64,
+        min_fraction_covered_bases: f32,
+        contig_end_exclusion: u64,
+        min_island_length: u64,
+    },
+    GapFractionEstimator {
+        total_internal_gap_bases: u64,
+        total_internal_span: u64,
+        observed_contig_length: u64,
+        num_covered_bases: u64,
+        num_mapped_reads: u64,
+        min_fraction_covered_bases: f32,
+        contig_end_exclusion: u64,
+        min_island_length: u64,
+    },
 }
 
 impl CoverageEstimator {
@@ -100,6 +132,9 @@ impl CoverageEstimator {
             CoverageEstimator::ReadsPerBaseCalculator { .. } => vec!["Reads per base"],
             CoverageEstimator::AverageIdentityEstimator { .. } => vec!["ANIr"],
             CoverageEstimator::StrobealignAembEstimator { .. } => vec!["Strobealign aemb"],
+            CoverageEstimator::IslandsPerMbpEstimator { .. } => vec!["Islands per Mbp"],
+            CoverageEstimator::MaxGapEstimator { .. } => vec!["Max Gap"],
+            CoverageEstimator::GapFractionEstimator { .. } => vec!["Gap Fraction"],
         }
     }
 }
@@ -223,6 +258,56 @@ impl CoverageEstimator {
         CoverageEstimator::StrobealignAembEstimator {}
     }
 
+    pub fn new_estimator_islands_per_mbp(
+        min_fraction_covered_bases: f32,
+        contig_end_exclusion: u64,
+        min_island_length: u64,
+    ) -> CoverageEstimator {
+        CoverageEstimator::IslandsPerMbpEstimator {
+            total_islands: 0,
+            covered_contigs_length: 0,
+            observed_contig_length: 0,
+            num_covered_bases: 0,
+            num_mapped_reads: 0,
+            min_fraction_covered_bases,
+            contig_end_exclusion,
+            min_island_length,
+        }
+    }
+
+    pub fn new_estimator_max_gap(
+        min_fraction_covered_bases: f32,
+        contig_end_exclusion: u64,
+        min_island_length: u64,
+    ) -> CoverageEstimator {
+        CoverageEstimator::MaxGapEstimator {
+            max_gap: 0,
+            observed_contig_length: 0,
+            num_covered_bases: 0,
+            num_mapped_reads: 0,
+            min_fraction_covered_bases,
+            contig_end_exclusion,
+            min_island_length,
+        }
+    }
+
+    pub fn new_estimator_gap_fraction(
+        min_fraction_covered_bases: f32,
+        contig_end_exclusion: u64,
+        min_island_length: u64,
+    ) -> CoverageEstimator {
+        CoverageEstimator::GapFractionEstimator {
+            total_internal_gap_bases: 0,
+            total_internal_span: 0,
+            observed_contig_length: 0,
+            num_covered_bases: 0,
+            num_mapped_reads: 0,
+            min_fraction_covered_bases,
+            contig_end_exclusion,
+            min_island_length,
+        }
+    }
+
     fn calculate_unobserved_bases(
         unobserved_contig_lengths: &[u64],
         contig_end_exclusion: u64,
@@ -240,6 +325,152 @@ impl CoverageEstimator {
             .sum();
         unobserved_not_excluded
     }
+}
+
+/// Result of a spatial scan of one contig's coverage profile.
+#[derive(Debug, Clone)]
+pub struct SpatialScanResult {
+    /// Number of valid islands (covered segments ≥ min_island_length)
+    pub n_islands: u64,
+    /// Total bases at depth 0 between two valid islands (not prefixes/suffixes)
+    pub total_internal_gap_bases: u64,
+    /// Largest internal gap in this contig
+    pub max_internal_gap: u64,
+    /// Contig length after contig_end_exclusion
+    pub analysed_contig_length: u64,
+    /// Positions between first and last covered base, inclusive (last - first + 1).
+    /// This is the region where internal gaps can exist.
+    pub internal_span: u64,
+    /// Raw number of covered bases (depth > 0), before min_island_length filtering.
+    /// Used for the min_fraction_covered_bases gate.
+    pub num_covered_bases: u64,
+}
+
+/// Scan a single contig's pileup for spatial coverage structure.
+///
+/// Streaming algorithm: O(contig_length) time, O(1) extra memory (no per-base vector).
+///
+/// Returns None if:
+/// - contig too short (< 2 × contig_end_exclusion)
+/// - no base has depth > 0
+/// - all covered segments are shorter than min_island_length (no valid island)
+pub fn spatial_scan(
+    ups_and_downs: &[i32],
+    contig_end_exclusion: u64,
+    min_island_length: u64,
+) -> Option<SpatialScanResult> {
+    let len = ups_and_downs.len();
+    if contig_end_exclusion * 2 >= len as u64 {
+        return None; // contig too short
+    }
+
+    let start_from = contig_end_exclusion as usize;
+    let end_at = len - contig_end_exclusion as usize - 1;
+    let analysed_contig_length = (end_at - start_from + 1) as u64;
+
+    // State variables for streaming run detection
+    let mut cumulative_sum: i32 = 0;
+    let mut num_covered_bases: u64 = 0;
+
+    // Island/gap tracking
+    let mut n_islands: u64 = 0;
+    let mut total_internal_gap_bases: u64 = 0;
+    let mut max_internal_gap: u64 = 0;
+    let mut first_island_seen = false;
+    let mut first_covered_pos: u64 = 0;
+    let mut last_covered_pos: u64 = 0;
+
+    // Current run tracking
+    let mut in_covered_run = false;
+    let mut current_run_length: u64 = 0;
+
+    // pending_gap_length accumulates gap bases + reclassified micro-islands,
+    // waiting to be confirmed as an internal gap when the next valid island is found.
+    let mut pending_gap_length: u64 = 0;
+
+    for (i, current) in ups_and_downs.iter().enumerate() {
+        cumulative_sum += current;
+
+        if i < start_from || i > end_at {
+            continue;
+        }
+
+        let is_covered = cumulative_sum > 0;
+
+        if is_covered {
+            num_covered_bases += 1;
+        }
+
+        if is_covered && !in_covered_run {
+            // Transition: uncovered → covered — start a new covered run
+            if in_covered_run || current_run_length > 0 {
+                // We were in an uncovered run — store its length in pending
+                pending_gap_length += current_run_length;
+            }
+            in_covered_run = true;
+            current_run_length = 1;
+        } else if !is_covered && in_covered_run {
+            // Transition: covered → uncovered — end of a covered run
+            if current_run_length < min_island_length {
+                // Micro-island: reclassify as uncovered
+                pending_gap_length += current_run_length;
+            } else {
+                // Valid island
+                if first_island_seen {
+                    // pending_gap_length is now a confirmed internal gap
+                    total_internal_gap_bases += pending_gap_length;
+                    if pending_gap_length > max_internal_gap {
+                        max_internal_gap = pending_gap_length;
+                    }
+                } else {
+                    first_covered_pos = (i as u64) - current_run_length;
+                    first_island_seen = true;
+                }
+                last_covered_pos = (i as u64) - 1; // last position of the island
+                n_islands += 1;
+                pending_gap_length = 0;
+            }
+            in_covered_run = false;
+            current_run_length = 1;
+        } else {
+            current_run_length += 1;
+        }
+    }
+
+    // End of contig: close the last run
+    if in_covered_run && current_run_length >= min_island_length {
+        // Last run is a valid island
+        if first_island_seen {
+            total_internal_gap_bases += pending_gap_length;
+            if pending_gap_length > max_internal_gap {
+                max_internal_gap = pending_gap_length;
+            }
+        } else {
+            first_covered_pos = (end_at as u64 + 1) - current_run_length;
+            first_island_seen = true;
+        }
+        last_covered_pos = end_at as u64;
+        n_islands += 1;
+    }
+    // If last run is a micro-island or uncovered, it becomes suffix → ignored
+    // If last run is uncovered, it's a suffix → ignored (pending_gap_length discarded)
+
+    if !first_island_seen || n_islands == 0 {
+        return None;
+    }
+
+    // internal_span: positions between first and last covered base, inclusive
+    // Convention: last - first + 1 (bounds inclusive)
+    let internal_span = last_covered_pos - first_covered_pos + 1;
+
+    Some(SpatialScanResult {
+        n_islands,
+        total_internal_gap_bases,
+        max_internal_gap,
+        analysed_contig_length,
+        internal_span,
+        num_covered_bases,
+    })
 }
 
 pub trait MosdepthGenomeCoverageEstimator {
@@ -360,6 +591,46 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
                 *num_reads = 0;
             }
             CoverageEstimator::StrobealignAembEstimator { .. } => panic!("Programming error"),
+            CoverageEstimator::IslandsPerMbpEstimator {
+                ref mut total_islands,
+                ref mut covered_contigs_length,
+                ref mut observed_contig_length,
+                ref mut num_covered_bases,
+                ref mut num_mapped_reads,
+                ..
+            } => {
+                *total_islands = 0;
+                *covered_contigs_length = 0;
+                *observed_contig_length = 0;
+                *num_covered_bases = 0;
+                *num_mapped_reads = 0;
+            }
+            CoverageEstimator::MaxGapEstimator {
+                ref mut max_gap,
+                ref mut observed_contig_length,
+                ref mut num_covered_bases,
+                ref mut num_mapped_reads,
+                ..
+            } => {
+                *max_gap = 0;
+                *observed_contig_length = 0;
+                *num_covered_bases = 0;
+                *num_mapped_reads = 0;
+            }
+            CoverageEstimator::GapFractionEstimator {
+                ref mut total_internal_gap_bases,
+                ref mut total_internal_span,
+                ref mut observed_contig_length,
+                ref mut num_covered_bases,
+                ref mut num_mapped_reads,
+                ..
+            } => {
+                *total_internal_gap_bases = 0;
+                *total_internal_span = 0;
+                *observed_contig_length = 0;
+                *num_covered_bases = 0;
+                *num_mapped_reads = 0;
+            }
         }
     }
 
@@ -524,6 +795,115 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
                 *sum_identity += sum_identity_in_contig;
             }
             CoverageEstimator::StrobealignAembEstimator { .. } => unreachable!(),
+            CoverageEstimator::IslandsPerMbpEstimator {
+                ref mut total_islands,
+                ref mut covered_contigs_length,
+                ref mut observed_contig_length,
+                ref mut num_covered_bases,
+                ref mut num_mapped_reads,
+                contig_end_exclusion,
+                min_island_length,
+                ..
+            } => {
+                *num_mapped_reads += num_mapped_reads_in_contig;
+                let len = ups_and_downs.len();
+                if *contig_end_exclusion * 2 >= len as u64 {
+                    return; // contig too short
+                }
+                let contig_analysed = len as u64 - 2 * *contig_end_exclusion;
+                *observed_contig_length += contig_analysed;
+                match spatial_scan(ups_and_downs, *contig_end_exclusion, *min_island_length) {
+                    Some(result) => {
+                        *num_covered_bases += result.num_covered_bases;
+                        *total_islands += result.n_islands;
+                        *covered_contigs_length += result.analysed_contig_length;
+                    }
+                    None => {
+                        // Count raw covered bases even if no valid island
+                        let start = *contig_end_exclusion as usize;
+                        let end = len - *contig_end_exclusion as usize - 1;
+                        let mut cs: i32 = 0;
+                        for (i, v) in ups_and_downs.iter().enumerate() {
+                            cs += v;
+                            if i >= start && i <= end && cs > 0 {
+                                *num_covered_bases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            CoverageEstimator::MaxGapEstimator {
+                ref mut max_gap,
+                ref mut observed_contig_length,
+                ref mut num_covered_bases,
+                ref mut num_mapped_reads,
+                contig_end_exclusion,
+                min_island_length,
+                ..
+            } => {
+                *num_mapped_reads += num_mapped_reads_in_contig;
+                let len = ups_and_downs.len();
+                if *contig_end_exclusion * 2 >= len as u64 {
+                    return;
+                }
+                let contig_analysed = len as u64 - 2 * *contig_end_exclusion;
+                *observed_contig_length += contig_analysed;
+                match spatial_scan(ups_and_downs, *contig_end_exclusion, *min_island_length) {
+                    Some(result) => {
+                        *num_covered_bases += result.num_covered_bases;
+                        if result.max_internal_gap > *max_gap {
+                            *max_gap = result.max_internal_gap;
+                        }
+                    }
+                    None => {
+                        let start = *contig_end_exclusion as usize;
+                        let end = len - *contig_end_exclusion as usize - 1;
+                        let mut cs: i32 = 0;
+                        for (i, v) in ups_and_downs.iter().enumerate() {
+                            cs += v;
+                            if i >= start && i <= end && cs > 0 {
+                                *num_covered_bases += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            CoverageEstimator::GapFractionEstimator {
+                ref mut total_internal_gap_bases,
+                ref mut total_internal_span,
+                ref mut observed_contig_length,
+                ref mut num_covered_bases,
+                ref mut num_mapped_reads,
+                contig_end_exclusion,
+                min_island_length,
+                ..
+            } => {
+                *num_mapped_reads += num_mapped_reads_in_contig;
+                let len = ups_and_downs.len();
+                if *contig_end_exclusion * 2 >= len as u64 {
+                    return;
+                }
+                let contig_analysed = len as u64 - 2 * *contig_end_exclusion;
+                *observed_contig_length += contig_analysed;
+                match spatial_scan(ups_and_downs, *contig_end_exclusion, *min_island_length) {
+                    Some(result) => {
+                        *num_covered_bases += result.num_covered_bases;
+                        *total_internal_gap_bases += result.total_internal_gap_bases;
+                        *total_internal_span += result.internal_span;
+                    }
+                    None => {
+                        let start = *contig_end_exclusion as usize;
+                        let end = len - *contig_end_exclusion as usize - 1;
+                        let mut cs: i32 = 0;
+                        for (i, v) in ups_and_downs.iter().enumerate() {
+                            cs += v;
+                            if i >= start && i <= end && cs > 0 {
+                                *num_covered_bases += 1;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -835,6 +1215,78 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
                 }
             }
             CoverageEstimator::StrobealignAembEstimator {} => unreachable!(),
+            CoverageEstimator::IslandsPerMbpEstimator {
+                total_islands,
+                covered_contigs_length,
+                observed_contig_length,
+                num_covered_bases,
+                contig_end_exclusion,
+                min_fraction_covered_bases,
+                ..
+            } => {
+                let total_bases = *observed_contig_length
+                    + CoverageEstimator::calculate_unobserved_bases(
+                        unobserved_contig_lengths,
+                        *contig_end_exclusion,
+                    );
+                if total_bases == 0
+                    || (*num_covered_bases as f32 / total_bases as f32)
+                        < *min_fraction_covered_bases
+                    || *covered_contigs_length == 0
+                {
+                    0.0
+                } else {
+                    *total_islands as f32 / (*covered_contigs_length as f32 / 1_000_000.0)
+                }
+            }
+            CoverageEstimator::MaxGapEstimator {
+                max_gap,
+                observed_contig_length,
+                num_covered_bases,
+                contig_end_exclusion,
+                min_fraction_covered_bases,
+                ..
+            } => {
+                let total_bases = *observed_contig_length
+                    + CoverageEstimator::calculate_unobserved_bases(
+                        unobserved_contig_lengths,
+                        *contig_end_exclusion,
+                    );
+                if total_bases == 0
+                    || (*num_covered_bases as f32 / total_bases as f32)
+                        < *min_fraction_covered_bases
+                {
+                    0.0
+                } else {
+                    // Note: u64 → f32 conversion loses precision beyond 16,777,216.
+                    // Acceptable for MAG contigs (rarely >10M bases).
+                    *max_gap as f32
+                }
+            }
+            CoverageEstimator::GapFractionEstimator {
+                total_internal_gap_bases,
+                total_internal_span,
+                observed_contig_length,
+                num_covered_bases,
+                contig_end_exclusion,
+                min_fraction_covered_bases,
+                ..
+            } => {
+                let total_bases = *observed_contig_length
+                    + CoverageEstimator::calculate_unobserved_bases(
+                        unobserved_contig_lengths,
+                        *contig_end_exclusion,
+                    );
+                if total_bases == 0
+                    || (*num_covered_bases as f32 / total_bases as f32)
+                        < *min_fraction_covered_bases
+                    || *total_internal_span == 0
+                {
+                    0.0
+                } else {
+                    *total_internal_gap_bases as f32 / *total_internal_span as f32
+                }
+            }
         }
     }
 
@@ -930,6 +1382,36 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
             CoverageEstimator::StrobealignAembEstimator { .. } => {
                 CoverageEstimator::new_estimator_strobealign_aemb()
             }
+            CoverageEstimator::IslandsPerMbpEstimator {
+                min_fraction_covered_bases,
+                contig_end_exclusion,
+                min_island_length,
+                ..
+            } => CoverageEstimator::new_estimator_islands_per_mbp(
+                *min_fraction_covered_bases,
+                *contig_end_exclusion,
+                *min_island_length,
+            ),
+            CoverageEstimator::MaxGapEstimator {
+                min_fraction_covered_bases,
+                contig_end_exclusion,
+                min_island_length,
+                ..
+            } => CoverageEstimator::new_estimator_max_gap(
+                *min_fraction_covered_bases,
+                *contig_end_exclusion,
+                *min_island_length,
+            ),
+            CoverageEstimator::GapFractionEstimator {
+                min_fraction_covered_bases,
+                contig_end_exclusion,
+                min_island_length,
+                ..
+            } => CoverageEstimator::new_estimator_gap_fraction(
+                *min_fraction_covered_bases,
+                *contig_end_exclusion,
+                *min_island_length,
+            ),
         }
     }
 
@@ -946,7 +1428,10 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
             | CoverageEstimator::ReadCountCalculator { .. }
             | CoverageEstimator::ReadsPerBaseCalculator { .. }
             | CoverageEstimator::AverageIdentityEstimator { .. }
-            | CoverageEstimator::StrobealignAembEstimator { .. } => {
+            | CoverageEstimator::StrobealignAembEstimator { .. }
+            | CoverageEstimator::IslandsPerMbpEstimator { .. }
+            | CoverageEstimator::MaxGapEstimator { .. }
+            | CoverageEstimator::GapFractionEstimator { .. } => {
                 coverage_taker.add_single_coverage(coverage);
             }
             CoverageEstimator::PileupCountsGenomeCoverageEstimator { counts, .. } => {
@@ -980,7 +1465,10 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
             | CoverageEstimator::ReadCountCalculator { .. }
             | CoverageEstimator::ReadsPerBaseCalculator { .. }
             | CoverageEstimator::AverageIdentityEstimator { .. }
-            | CoverageEstimator::StrobealignAembEstimator { .. } => {
+            | CoverageEstimator::StrobealignAembEstimator { .. }
+            | CoverageEstimator::IslandsPerMbpEstimator { .. }
+            | CoverageEstimator::MaxGapEstimator { .. }
+            | CoverageEstimator::GapFractionEstimator { .. } => {
                 coverage_taker.add_single_coverage(0.0);
             }
             CoverageEstimator::PileupCountsGenomeCoverageEstimator { .. } => {}
@@ -1057,6 +1545,15 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
             CoverageEstimator::StrobealignAembEstimator { .. } => {
                 panic!("Strobealign AEMB does not calculate number of mapped reads")
             }
+            CoverageEstimator::IslandsPerMbpEstimator {
+                num_mapped_reads, ..
+            }
+            | CoverageEstimator::MaxGapEstimator {
+                num_mapped_reads, ..
+            }
+            | CoverageEstimator::GapFractionEstimator {
+                num_mapped_reads, ..
+            } => *num_mapped_reads,
         }
     }
 }

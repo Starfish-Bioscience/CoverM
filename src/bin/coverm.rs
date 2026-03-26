@@ -983,6 +983,7 @@ impl EstimatorsAndTaker {
         let mut estimators = vec![];
         let min_fraction_covered = parse_percentage(m, "min-covered-fraction");
         let contig_end_exclusion = *m.get_one::<u64>("contig-end-exclusion").unwrap();
+        let min_island_length = *m.get_one::<u64>("min-island-length").unwrap_or(&1);
 
         let methods: Vec<&str> = m
             .get_many::<String>("methods")
@@ -1097,6 +1098,27 @@ impl EstimatorsAndTaker {
                             process::exit(1);
                         }
                         estimators.push(CoverageEstimator::new_estimator_strobealign_aemb());
+                    }
+                    "islands_per_mbp" => {
+                        estimators.push(CoverageEstimator::new_estimator_islands_per_mbp(
+                            min_fraction_covered,
+                            contig_end_exclusion,
+                            min_island_length,
+                        ));
+                    }
+                    "max_gap" => {
+                        estimators.push(CoverageEstimator::new_estimator_max_gap(
+                            min_fraction_covered,
+                            contig_end_exclusion,
+                            min_island_length,
+                        ));
+                    }
+                    "gap_fraction" => {
+                        estimators.push(CoverageEstimator::new_estimator_gap_fraction(
+                            min_fraction_covered,
+                            contig_end_exclusion,
+                            min_island_length,
+                        ));
                     }
                     _ => unreachable!(),
                 };

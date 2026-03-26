@@ -818,8 +818,17 @@ pub fn genome_full_help() -> Manual {
                     &[&monospace_roff("anir"), "Average BLAST-like identity of mapped reads"],
                     &[&monospace_roff("rpkm"), "Reads mapped per kilobase of genome, per million mapped reads"],
                     &[&monospace_roff("tpm"), "Transcripts Per Million as described in Li et al 2010 https://doi.org/10.1093/bioinformatics/btp692"],
+                    &[&monospace_roff("islands_per_mbp"), "Number of distinct covered segments (islands) per megabase of genome with signal. Spatial metric."],
+                    &[&monospace_roff("max_gap"), "Largest uncovered region (in bases) between two islands within a contig. Spatial metric."],
+                    &[&monospace_roff("gap_fraction"), "Fraction of internal span (between first and last island) that is uncovered. Spatial metric."],
                 ])
             )))
+            .option(Opt::new("INT").long("--min-island-length").help(
+                &format!("Minimum length of a covered segment to count as an island \
+                for spatial metrics (islands_per_mbp, max_gap, gap_fraction). \
+                Shorter segments are reclassified as uncovered. \
+                {}", default_roff("1"))
+            ))
             .option(Opt::new("FRACTION").long("--min-covered-fraction").help(
                 &format!("Genomes with less covered bases than this are \
                 reported as having zero coverage. \
@@ -1445,8 +1454,22 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                             "anir",
                             "rpkm",
                             "tpm",
+                            "islands_per_mbp",
+                            "max_gap",
+                            "gap_fraction",
                         ])
                         .default_value("relative_abundance"),
+                )
+                .arg(
+                    Arg::new("min-island-length")
+                        .long("min-island-length")
+                        .default_value("1")
+                        .value_parser(clap::value_parser!(u64))
+                        .help(
+                            "Minimum length of a covered segment to be counted as an island \
+                               for spatial metrics (islands_per_mbp, max_gap, gap_fraction). \
+                               Shorter segments are reclassified as uncovered.",
+                        ),
                 )
                 .arg(
                     Arg::new("trim-min")
