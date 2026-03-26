@@ -1691,4 +1691,368 @@ mod tests {
             }
         }
     }
+
+    // =========================================================================
+    // Edge cases for spatial_scan()
+    // =========================================================================
+
+    #[test]
+    fn test_single_base_island() {
+        // 50bp contig, single base covered at position 25
+        let ud = make_ups_and_downs(50, &[(25, 26, 1)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.internal_span, 1);
+        assert_eq!(result.total_internal_gap_bases, 0);
+        assert_eq!(result.num_covered_bases, 1);
+    }
+
+    #[test]
+    fn test_single_base_gap() {
+        // 50bp contig, two islands separated by exactly 1 base: [10..20), [21..30)
+        let ud = make_ups_and_downs(50, &[(10, 20, 5), (21, 30, 5)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 2);
+        assert_eq!(result.total_internal_gap_bases, 1);
+        assert_eq!(result.max_internal_gap, 1);
+        // span: 10..29 = 20
+        assert_eq!(result.internal_span, 20);
+    }
+
+    #[test]
+    fn test_adjacent_islands_no_gap() {
+        // Two islands that are exactly adjacent: [10..20), [20..30)
+        let ud = make_ups_and_downs(50, &[(10, 20, 5), (20, 30, 3)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        // They should merge into one island (no gap between them)
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.total_internal_gap_bases, 0);
+        assert_eq!(result.max_internal_gap, 0);
+        assert_eq!(result.internal_span, 20);
+        assert_eq!(result.num_covered_bases, 20);
+    }
+
+    #[test]
+    fn test_overlapping_reads_varying_depth() {
+        // 100bp contig, overlapping reads creating varying depth
+        // [10..50) at 3x, [30..70) at additional 2x → total [10..30)=3x, [30..50)=5x, [50..70)=2x
+        let ud = make_ups_and_downs(100, &[(10, 50, 3), (30, 70, 2)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        // All covered from 10..70, one island
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.total_internal_gap_bases, 0);
+        assert_eq!(result.internal_span, 60);
+        assert_eq!(result.num_covered_bases, 60);
+    }
+
+    #[test]
+    fn test_exclusion_cuts_into_island() {
+        // 100bp contig, island [0..100) full coverage, exclusion=30
+        // Analysed region: [30..69] = 40bp, still one island
+        let ud = make_ups_and_downs(100, &[(0, 100, 5)]);
+        let result = spatial_scan(&ud, 30, 1).unwrap();
+        assert_eq!(result.analysed_contig_length, 40);
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.internal_span, 40);
+    }
+
+    #[test]
+    fn test_exclusion_removes_island() {
+        // 100bp contig, island only at [5..10), exclusion=10
+        // Analysed region: [10..89] — island is outside → None
+        let ud = make_ups_and_downs(100, &[(5, 10, 5)]);
+        assert!(spatial_scan(&ud, 10, 1).is_none());
+    }
+
+    #[test]
+    fn test_exclusion_exactly_at_boundary() {
+        // 100bp contig, exclusion=10, island starts exactly at exclusion boundary [10..50)
+        let ud = make_ups_and_downs(100, &[(10, 50, 5)]);
+        let result = spatial_scan(&ud, 10, 1).unwrap();
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.num_covered_bases, 40);
+    }
+
+    #[test]
+    fn test_micro_island_between_two_valid_islands() {
+        // Two valid islands with a micro-island in the gap between them
+        // [10..60), micro [70..75), [100..150)
+        // min_island_length=20 → micro at [70..75) is reclassified
+        // Gap should be 10..60 → gap from 60 to 100 = 40bp (including the 5bp micro)
+        let ud = make_ups_and_downs(200, &[(10, 60, 5), (70, 75, 5), (100, 150, 5)]);
+        let result = spatial_scan(&ud, 0, 20).unwrap();
+        assert_eq!(result.n_islands, 2);
+        // Internal gap: [60..100) but micro [70..75) is absorbed → total = 40
+        assert_eq!(result.total_internal_gap_bases, 40);
+        assert_eq!(result.max_internal_gap, 40);
+    }
+
+    #[test]
+    fn test_two_micro_islands_between_valid_islands() {
+        // [10..60), micro [70..75), micro [80..85), [100..150)
+        // min_island_length=20 → both micros reclassified
+        let ud = make_ups_and_downs(200, &[(10, 60, 5), (70, 75, 5), (80, 85, 5), (100, 150, 5)]);
+        let result = spatial_scan(&ud, 0, 20).unwrap();
+        assert_eq!(result.n_islands, 2);
+        // Gap: 60 to 100 = 40bp (both micros absorbed into gap)
+        assert_eq!(result.total_internal_gap_bases, 40);
+    }
+
+    #[test]
+    fn test_island_at_very_end_of_contig() {
+        // 100bp contig, island at the very end: [90..100)
+        let ud = make_ups_and_downs(100, &[(90, 100, 5)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.internal_span, 10);
+        assert_eq!(result.total_internal_gap_bases, 0);
+    }
+
+    #[test]
+    fn test_island_at_very_start_of_contig() {
+        // 100bp contig, island at the very start: [0..10)
+        let ud = make_ups_and_downs(100, &[(0, 10, 5)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.internal_span, 10);
+    }
+
+    #[test]
+    fn test_many_small_islands_high_fragmentation() {
+        // Simulate false positive: 10 small islands of 5bp each across 1000bp
+        let mut regions: Vec<(usize, usize, i32)> = vec![];
+        for i in 0..10 {
+            let start = i * 100;
+            regions.push((start, start + 5, 3));
+        }
+        let ud = make_ups_and_downs(1000, &regions);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 10);
+        assert_eq!(result.num_covered_bases, 50);
+        // Internal gaps: 9 gaps of 95bp each = 855
+        assert_eq!(result.total_internal_gap_bases, 855);
+        assert_eq!(result.max_internal_gap, 95);
+        // Span: 0..904 = 905
+        assert_eq!(result.internal_span, 905);
+        // gap_fraction should be very high
+        let gf = result.gap_fraction();
+        assert!(gf > 0.9, "gap_fraction should be >0.9, got {}", gf);
+    }
+
+    #[test]
+    fn test_continuous_coverage_low_fragmentation() {
+        // Simulate true MAG: one large island covering most of the contig
+        let ud = make_ups_and_downs(1000, &[(10, 980, 8)]);
+        let result = spatial_scan(&ud, 0, 1).unwrap();
+        assert_eq!(result.n_islands, 1);
+        assert_eq!(result.total_internal_gap_bases, 0);
+        assert_eq!(result.gap_fraction(), 0.0);
+    }
+
+    // =========================================================================
+    // Estimator integration tests (add_contig → calculate_coverage)
+    // =========================================================================
+
+    #[test]
+    fn test_islands_per_mbp_estimator_single_contig() {
+        let mut est = CoverageEstimator::new_estimator_islands_per_mbp(0.0, 0, 1);
+        // 1000bp contig, 3 islands
+        let ud = make_ups_and_downs(1000, &[(10, 100, 5), (200, 400, 5), (600, 900, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        // 3 islands / (1000bp / 1e6) = 3 / 0.001 = 3000
+        assert!((coverage - 3000.0).abs() < 1.0, "got {}", coverage);
+    }
+
+    #[test]
+    fn test_islands_per_mbp_estimator_multi_contig() {
+        let mut est = CoverageEstimator::new_estimator_islands_per_mbp(0.0, 0, 1);
+
+        // Contig 1: 1000bp, 2 islands
+        let ud1 = make_ups_and_downs(1000, &[(10, 200, 5), (500, 800, 5)]);
+        est.add_contig(&ud1, 10, 0, 0.0);
+
+        // Contig 2: 2000bp, 1 island
+        let ud2 = make_ups_and_downs(2000, &[(100, 1500, 5)]);
+        est.add_contig(&ud2, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        // 3 islands / (3000bp / 1e6) = 3 / 0.003 = 1000
+        assert!((coverage - 1000.0).abs() < 1.0, "got {}", coverage);
+    }
+
+    #[test]
+    fn test_islands_per_mbp_estimator_uncovered_contig_excluded() {
+        let mut est = CoverageEstimator::new_estimator_islands_per_mbp(0.0, 0, 1);
+
+        // Contig 1: 1000bp, 2 islands
+        let ud1 = make_ups_and_downs(1000, &[(10, 200, 5), (500, 800, 5)]);
+        est.add_contig(&ud1, 10, 0, 0.0);
+
+        // Contig 2: 2000bp, no coverage
+        let ud2 = vec![0i32; 2000];
+        est.add_contig(&ud2, 0, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        // 2 islands / (1000bp / 1e6) = 2000 — uncovered contig not in denominator
+        assert!((coverage - 2000.0).abs() < 1.0, "got {}", coverage);
+    }
+
+    #[test]
+    fn test_max_gap_estimator_multi_contig() {
+        let mut est = CoverageEstimator::new_estimator_max_gap(0.0, 0, 1);
+
+        // Contig 1: gap of 200bp
+        let ud1 = make_ups_and_downs(500, &[(10, 50, 5), (250, 400, 5)]);
+        est.add_contig(&ud1, 10, 0, 0.0);
+
+        // Contig 2: gap of 500bp (larger)
+        let ud2 = make_ups_and_downs(1000, &[(10, 50, 5), (550, 800, 5)]);
+        est.add_contig(&ud2, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        // max_gap should be 500 (from contig 2)
+        assert!((coverage - 500.0).abs() < 1.0, "got {}", coverage);
+    }
+
+    #[test]
+    fn test_max_gap_estimator_no_gaps() {
+        let mut est = CoverageEstimator::new_estimator_max_gap(0.0, 0, 1);
+        let ud = make_ups_and_downs(100, &[(0, 100, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+        let coverage = est.calculate_coverage(&[]);
+        assert_eq!(coverage, 0.0);
+    }
+
+    #[test]
+    fn test_gap_fraction_estimator() {
+        let mut est = CoverageEstimator::new_estimator_gap_fraction(0.0, 0, 1);
+
+        // 1000bp contig: islands [10..100), [200..400), [600..900)
+        // Internal gaps: [100..200)=100bp, [400..600)=200bp → total=300bp
+        // Internal span: 10..899 = 890bp
+        let ud = make_ups_and_downs(1000, &[(10, 100, 5), (200, 400, 5), (600, 900, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        let expected = 300.0 / 890.0;
+        assert!(
+            (coverage - expected).abs() < 0.001,
+            "got {}, expected {}",
+            coverage,
+            expected
+        );
+    }
+
+    #[test]
+    fn test_gap_fraction_estimator_multi_contig() {
+        let mut est = CoverageEstimator::new_estimator_gap_fraction(0.0, 0, 1);
+
+        // Contig 1: span 90, gap 50
+        let ud1 = make_ups_and_downs(200, &[(10, 50, 5), (100, 150, 5)]);
+        est.add_contig(&ud1, 10, 0, 0.0);
+
+        // Contig 2: span 80, gap 30
+        let ud2 = make_ups_and_downs(200, &[(10, 60, 5), (90, 140, 5)]);
+        est.add_contig(&ud2, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        // total_internal_gap = 50 + 30 = 80
+        // total_internal_span = (149-10+1) + (139-10+1) = 140 + 130 = 270
+        let expected = 80.0 / 270.0;
+        assert!(
+            (coverage - expected).abs() < 0.01,
+            "got {}, expected {}",
+            coverage,
+            expected
+        );
+    }
+
+    #[test]
+    fn test_estimator_min_fraction_gate() {
+        // Set min_fraction_covered_bases = 0.5
+        let mut est = CoverageEstimator::new_estimator_islands_per_mbp(0.5, 0, 1);
+
+        // 1000bp contig with only 100bp covered → 10% < 50% → should be gated
+        let ud = make_ups_and_downs(1000, &[(100, 200, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        assert_eq!(coverage, 0.0, "should be 0.0 due to min_fraction gate");
+    }
+
+    #[test]
+    fn test_estimator_min_fraction_gate_passes() {
+        let mut est = CoverageEstimator::new_estimator_max_gap(0.5, 0, 1);
+
+        // 1000bp contig with 800bp covered → 80% > 50% → gate passes
+        let ud = make_ups_and_downs(1000, &[(10, 500, 5), (600, 810, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        // Gap of 100bp between islands
+        assert!((coverage - 100.0).abs() < 1.0, "got {}", coverage);
+    }
+
+    #[test]
+    fn test_estimator_with_unobserved_contigs() {
+        let mut est = CoverageEstimator::new_estimator_islands_per_mbp(0.5, 0, 1);
+
+        // 1000bp contig, 800bp covered
+        let ud = make_ups_and_downs(1000, &[(100, 900, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+
+        // Unobserved contig of 9000bp → total = 10000bp, covered = 800/10000 = 8% < 50%
+        let coverage = est.calculate_coverage(&[9000]);
+        assert_eq!(
+            coverage, 0.0,
+            "unobserved contigs should push below min_fraction gate"
+        );
+    }
+
+    #[test]
+    fn test_estimator_setup_resets() {
+        let mut est = CoverageEstimator::new_estimator_gap_fraction(0.0, 0, 1);
+
+        // Add some data
+        let ud = make_ups_and_downs(100, &[(10, 50, 5), (60, 90, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+
+        // Reset
+        est.setup();
+
+        // After reset, should return 0.0
+        let coverage = est.calculate_coverage(&[]);
+        assert_eq!(coverage, 0.0, "setup should reset all accumulators");
+    }
+
+    #[test]
+    fn test_estimator_with_contig_end_exclusion() {
+        let mut est = CoverageEstimator::new_estimator_max_gap(0.0, 10, 1);
+
+        // 100bp contig, exclusion=10, islands at [5..15) and [85..95)
+        // After exclusion [10..89]: first island is cut to [10..15)=5bp,
+        // second island is cut to [85..89]=5bp
+        // Gap: [15..85) = 70bp
+        let ud = make_ups_and_downs(100, &[(5, 15, 5), (85, 95, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        assert!((coverage - 70.0).abs() < 1.0, "got {}", coverage);
+    }
+
+    #[test]
+    fn test_min_island_length_in_estimator() {
+        let mut est = CoverageEstimator::new_estimator_islands_per_mbp(0.0, 0, 50);
+
+        // 1000bp contig: micro [10..15)=5bp, valid [100..800)=700bp, micro [900..905)=5bp
+        let ud = make_ups_and_downs(1000, &[(10, 15, 5), (100, 800, 5), (900, 905, 5)]);
+        est.add_contig(&ud, 10, 0, 0.0);
+
+        let coverage = est.calculate_coverage(&[]);
+        // Only 1 valid island, denominator = 1000bp
+        // 1 / (1000/1e6) = 1000
+        assert!((coverage - 1000.0).abs() < 1.0, "got {}", coverage);
+    }
 }

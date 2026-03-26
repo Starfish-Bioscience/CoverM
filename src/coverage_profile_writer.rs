@@ -270,4 +270,204 @@ mod tests {
             assert!(tbi_path.exists(), "tabix index file should exist");
         }
     }
+
+    // =========================================================================
+    // Edge case tests for BedGraph writer
+    // =========================================================================
+
+    #[test]
+    fn test_overlapping_reads_depth_profile() {
+        // 3 overlapping reads creating a staircase pattern
+        // Read 1: [10..30), Read 2: [20..40), Read 3: [25..35)
+        // Depth: [0..10)=0, [10..20)=1, [20..25)=2, [25..30)=3, [30..35)=2, [35..40)=1, [40..50)=0
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bedgraph.gz");
+
+        let ud = make_ups_and_downs(50, &[(10, 30, 1), (20, 40, 1), (25, 35, 1)]);
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        writer.write_contig("ctg", &ud);
+        writer.finish();
+
+        let contents = read_bgzf(&path);
+        let lines: Vec<&str> = contents.trim().split('\n').collect();
+        assert_eq!(lines.len(), 7, "Should have 7 RLE segments");
+        assert_eq!(lines[0], "ctg\t0\t10\t0");
+        assert_eq!(lines[1], "ctg\t10\t20\t1");
+        assert_eq!(lines[2], "ctg\t20\t25\t2");
+        assert_eq!(lines[3], "ctg\t25\t30\t3");
+        assert_eq!(lines[4], "ctg\t30\t35\t2");
+        assert_eq!(lines[5], "ctg\t35\t40\t1");
+        assert_eq!(lines[6], "ctg\t40\t50\t0");
+    }
+
+    #[test]
+    fn test_bedgraph_segments_cover_full_contig_length() {
+        // Verify that the sum of all segment lengths equals the contig length
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bedgraph.gz");
+
+        let contig_len = 500;
+        let ud = make_ups_and_downs(contig_len, &[(10, 50, 5), (100, 200, 3), (300, 450, 8)]);
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        writer.write_contig("ctg", &ud);
+        writer.finish();
+
+        let contents = read_bgzf(&path);
+        let total_len: usize = contents
+            .trim()
+            .lines()
+            .map(|line| {
+                let fields: Vec<&str> = line.split('\t').collect();
+                let start: usize = fields[1].parse().unwrap();
+                let end: usize = fields[2].parse().unwrap();
+                end - start
+            })
+            .sum();
+        assert_eq!(
+            total_len, contig_len,
+            "Sum of segment lengths should equal contig length"
+        );
+    }
+
+    #[test]
+    fn test_bedgraph_segments_are_contiguous() {
+        // Verify that segments are contiguous (no gaps, no overlaps)
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bedgraph.gz");
+
+        let ud = make_ups_and_downs(200, &[(20, 80, 5), (60, 150, 3)]);
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        writer.write_contig("ctg", &ud);
+        writer.finish();
+
+        let contents = read_bgzf(&path);
+        let mut prev_end: Option<usize> = None;
+        for line in contents.trim().lines() {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let start: usize = fields[1].parse().unwrap();
+            let end: usize = fields[2].parse().unwrap();
+
+            assert!(end > start, "Segment end must be > start");
+            if let Some(pe) = prev_end {
+                assert_eq!(start, pe, "Segments must be contiguous");
+            }
+            prev_end = Some(end);
+        }
+    }
+
+    #[test]
+    fn test_bedgraph_no_adjacent_same_depth() {
+        // Verify that RLE is correct: no two adjacent segments with same depth
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bedgraph.gz");
+
+        let ud = make_ups_and_downs(300, &[(10, 100, 5), (100, 200, 5), (200, 290, 5)]);
+        // All at same depth 5 from 10..290, should be merged
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        writer.write_contig("ctg", &ud);
+        writer.finish();
+
+        let contents = read_bgzf(&path);
+        let lines: Vec<&str> = contents.trim().split('\n').collect();
+        // Should be: 0..10 at 0, 10..290 at 5, 290..300 at 0 → 3 segments
+        assert_eq!(
+            lines.len(),
+            3,
+            "Adjacent same-depth should be merged: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn test_single_base_contig() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bedgraph.gz");
+
+        let ud = vec![5i32; 1]; // 1bp contig at depth 5
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        writer.write_contig("tiny", &ud);
+        writer.finish();
+
+        let contents = read_bgzf(&path);
+        assert_eq!(contents, "tiny\t0\t1\t5\n");
+    }
+
+    #[test]
+    fn test_many_contigs_ordering() {
+        // Write many contigs and verify ordering is preserved
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bedgraph.gz");
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        for i in 0..20 {
+            let name = format!("contig_{:03}", i);
+            let ud = make_ups_and_downs(100, &[(10, 90, (i + 1) as i32)]);
+            writer.write_contig(&name, &ud);
+        }
+        writer.finish();
+
+        let contents = read_bgzf(&path);
+        let contig_names: Vec<&str> = contents
+            .lines()
+            .map(|l| l.split('\t').next().unwrap())
+            .collect();
+        // First contig_000, then contig_001, etc.
+        assert!(contig_names.starts_with(&["contig_000"]));
+        assert!(contig_names.contains(&"contig_019"));
+    }
+
+    #[test]
+    fn test_mixed_covered_uncovered_contigs() {
+        // Simulate a real scenario: some contigs covered, some not
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bedgraph.gz");
+
+        let mut writer = CoverageProfileWriter::new(&path);
+
+        // Covered contig
+        let ud1 = make_ups_and_downs(200, &[(10, 190, 8)]);
+        writer.write_contig("covered_ctg", &ud1);
+
+        // Uncovered contig (all zeros)
+        let ud2 = vec![0i32; 500];
+        writer.write_contig("uncovered_ctg", &ud2);
+
+        // Another covered contig
+        let ud3 = make_ups_and_downs(100, &[(0, 100, 3)]);
+        writer.write_contig("also_covered", &ud3);
+
+        writer.finish();
+
+        let contents = read_bgzf(&path);
+        // Uncovered contig should still appear as single 0-depth segment
+        assert!(contents.contains("uncovered_ctg\t0\t500\t0\n"));
+        assert!(contents.contains("covered_ctg\t"));
+        assert!(contents.contains("also_covered\t"));
+    }
+
+    #[test]
+    fn test_bgzf_file_readable_by_zcat() {
+        // Verify the output is valid bgzf (readable by bgzf::Reader and standard tools)
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bedgraph.gz");
+
+        let ud = make_ups_and_downs(100, &[(10, 90, 5)]);
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        writer.write_contig("test", &ud);
+        writer.finish();
+
+        // Verify file exists and is not empty
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert!(metadata.len() > 0, "bgzf file should not be empty");
+
+        // Verify it's readable as bgzf
+        let contents = read_bgzf(&path);
+        assert!(contents.contains("test\t10\t90\t5"));
+    }
 }
