@@ -3936,3 +3936,369 @@ genome6~random_sequence_length_11003	0	0	0
 // TODO: Add mismatching bases test
 // TODO: Filter fails when reference sequences are duplicated?
 // TODO: Filter should spit things out if no thresholds are specified.
+
+// =========================================================================
+// Spatial metrics integration tests
+// =========================================================================
+
+#[cfg(test)]
+mod spatial_tests {
+    use assert_cli::Assert;
+    use std::io::Read;
+
+    /// Helper: run coverm genome and capture stdout
+    fn run_coverm_genome(args: &[&str]) -> String {
+        let binary = env!("CARGO_BIN_EXE_coverm");
+        let output = std::process::Command::new(binary)
+            .args(args)
+            .output()
+            .expect("Failed to run coverm");
+        assert!(
+            output.status.success(),
+            "coverm failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[test]
+    fn test_spatial_metrics_with_genome_definition() {
+        let stdout = run_coverm_genome(&[
+            "genome",
+            "-b",
+            "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+            "--genome-definition",
+            "tests/data/7seqs.definition",
+            "-m",
+            "mean",
+            "covered_fraction",
+            "islands_per_mbp",
+            "max_gap",
+            "gap_fraction",
+            "--min-covered-fraction",
+            "0",
+            "--contig-end-exclusion",
+            "0",
+        ]);
+
+        // Verify header has all expected columns
+        let header = stdout.lines().next().unwrap();
+        assert!(header.contains("Mean"), "Missing Mean column");
+        assert!(header.contains("Covered Fraction"));
+        assert!(header.contains("Islands per Mbp"));
+        assert!(header.contains("Max Gap"));
+        assert!(header.contains("Gap Fraction"));
+
+        // Verify genomes with no coverage have all zeros
+        for line in stdout.lines().skip(1) {
+            let parts: Vec<&str> = line.split('\t').collect();
+            let genome = parts[0];
+            if ["genome1", "genome3", "genome4", "genome6"].contains(&genome) {
+                for val in &parts[1..] {
+                    assert_eq!(
+                        val.parse::<f64>().unwrap(),
+                        0.0,
+                        "Uncovered genome {} should have 0, got {}",
+                        genome,
+                        val
+                    );
+                }
+            }
+        }
+
+        // Verify genomes with coverage have non-zero spatial metrics
+        for line in stdout.lines().skip(1) {
+            let parts: Vec<&str> = line.split('\t').collect();
+            let genome = parts[0];
+            if genome == "genome2" || genome == "genome5" {
+                let mean: f64 = parts[1].parse().unwrap();
+                let islands_per_mbp: f64 = parts[3].parse().unwrap();
+                let max_gap: f64 = parts[4].parse().unwrap();
+
+                assert!(mean > 0.0, "{} should have non-zero mean", genome);
+                assert!(
+                    islands_per_mbp > 0.0,
+                    "{} should have non-zero islands_per_mbp",
+                    genome
+                );
+                assert!(max_gap > 0.0, "{} should have non-zero max_gap", genome);
+            }
+        }
+    }
+
+    #[test]
+    fn test_spatial_metrics_with_separator() {
+        let stdout = run_coverm_genome(&[
+            "genome",
+            "-b",
+            "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+            "-s",
+            "~",
+            "-m",
+            "islands_per_mbp",
+            "max_gap",
+            "gap_fraction",
+            "--min-covered-fraction",
+            "0",
+            "--contig-end-exclusion",
+            "0",
+        ]);
+
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert!(
+            lines.len() >= 7,
+            "Expected at least 7 lines, got {}",
+            lines.len()
+        );
+
+        // genome2 should have spatial signal
+        let genome2_line = lines.iter().find(|l| l.starts_with("genome2")).unwrap();
+        let parts: Vec<&str> = genome2_line.split('\t').collect();
+        let islands: f64 = parts[1].parse().unwrap();
+        assert!(islands > 0.0, "genome2 should have islands");
+    }
+
+    #[test]
+    fn test_spatial_metrics_combined_with_existing() {
+        // Verify spatial metrics work alongside all classic metrics
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "-b",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "--genome-definition",
+                "tests/data/7seqs.definition",
+                "-m",
+                "mean",
+                "trimmed_mean",
+                "covered_fraction",
+                "covered_bases",
+                "variance",
+                "length",
+                "count",
+                "reads_per_base",
+                "rpkm",
+                "tpm",
+                "islands_per_mbp",
+                "max_gap",
+                "gap_fraction",
+                "--min-covered-fraction",
+                "0",
+            ])
+            .succeeds()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_spatial_metrics_only() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "-b",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "--genome-definition",
+                "tests/data/7seqs.definition",
+                "-m",
+                "islands_per_mbp",
+                "max_gap",
+                "gap_fraction",
+                "--min-covered-fraction",
+                "0",
+            ])
+            .succeeds()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_min_island_length_changes_results() {
+        let stdout1 = run_coverm_genome(&[
+            "genome",
+            "-b",
+            "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+            "--genome-definition",
+            "tests/data/7seqs.definition",
+            "-m",
+            "islands_per_mbp",
+            "--min-covered-fraction",
+            "0",
+            "--contig-end-exclusion",
+            "0",
+            "--min-island-length",
+            "1",
+        ]);
+
+        let stdout2 = run_coverm_genome(&[
+            "genome",
+            "-b",
+            "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+            "--genome-definition",
+            "tests/data/7seqs.definition",
+            "-m",
+            "islands_per_mbp",
+            "--min-covered-fraction",
+            "0",
+            "--contig-end-exclusion",
+            "0",
+            "--min-island-length",
+            "500",
+        ]);
+
+        // With min_island_length=500, islands_per_mbp should be different
+        assert_ne!(
+            stdout1, stdout2,
+            "--min-island-length should change results"
+        );
+    }
+
+    #[test]
+    fn test_coverage_profile_output() {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let profile_dir = tmpdir.path().join("profiles");
+
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "-b",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "--genome-definition",
+                "tests/data/7seqs.definition",
+                "-m",
+                "mean",
+                "--coverage-profile",
+                profile_dir.to_str().unwrap(),
+                "--contig-end-exclusion",
+                "0",
+            ])
+            .succeeds()
+            .unwrap();
+
+        // Check bgzf file was created and is not empty
+        let bedgraph_path = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bedgraph.gz");
+        assert!(bedgraph_path.exists(), "BedGraph file should exist");
+        assert!(
+            std::fs::metadata(&bedgraph_path).unwrap().len() > 0,
+            "BedGraph file should not be empty"
+        );
+
+        // Read bgzf and verify content structure
+        let mut reader = rust_htslib::bgzf::Reader::from_path(&bedgraph_path).unwrap();
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents).unwrap();
+
+        // Should contain covered contigs
+        assert!(contents.contains("genome2~seq1"));
+
+        // Verify BedGraph format (4 tab-separated columns, start < end)
+        for line in contents.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            assert_eq!(parts.len(), 4, "Bad BedGraph line: '{}'", line);
+            let start: usize = parts[1].parse().unwrap();
+            let end: usize = parts[2].parse().unwrap();
+            assert!(end > start, "end should be > start: {}", line);
+            let _depth: i32 = parts[3].parse().unwrap();
+        }
+
+        // Check tabix index (if tabix available)
+        let tbi_path = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bedgraph.gz.tbi");
+        if std::process::Command::new("tabix")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            assert!(tbi_path.exists(), "Tabix index should exist");
+        }
+    }
+
+    #[test]
+    fn test_coverage_profile_with_spatial_metrics() {
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let profile_dir = tmpdir.path().join("profiles");
+
+        let stdout = run_coverm_genome(&[
+            "genome",
+            "-b",
+            "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+            "--genome-definition",
+            "tests/data/7seqs.definition",
+            "-m",
+            "mean",
+            "islands_per_mbp",
+            "max_gap",
+            "gap_fraction",
+            "--coverage-profile",
+            profile_dir.to_str().unwrap(),
+            "--min-covered-fraction",
+            "0",
+            "--contig-end-exclusion",
+            "0",
+        ]);
+
+        // TSV has all columns
+        let header = stdout.lines().next().unwrap();
+        assert!(header.contains("Islands per Mbp"));
+        assert!(header.contains("Max Gap"));
+        assert!(header.contains("Gap Fraction"));
+
+        // BedGraph was also created
+        let bedgraph_path = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bedgraph.gz");
+        assert!(bedgraph_path.exists());
+    }
+
+    #[test]
+    fn test_existing_metrics_unchanged() {
+        // Verify that adding spatial metrics doesn't change the values of existing metrics
+        let stdout_without = run_coverm_genome(&[
+            "genome",
+            "-b",
+            "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+            "--genome-definition",
+            "tests/data/7seqs.definition",
+            "-m",
+            "mean",
+            "covered_fraction",
+            "--min-covered-fraction",
+            "0",
+            "--contig-end-exclusion",
+            "0",
+        ]);
+
+        let stdout_with = run_coverm_genome(&[
+            "genome",
+            "-b",
+            "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+            "--genome-definition",
+            "tests/data/7seqs.definition",
+            "-m",
+            "mean",
+            "covered_fraction",
+            "islands_per_mbp",
+            "max_gap",
+            "gap_fraction",
+            "--min-covered-fraction",
+            "0",
+            "--contig-end-exclusion",
+            "0",
+        ]);
+
+        // Compare mean and covered_fraction columns (should be identical)
+        for (line1, line2) in stdout_without
+            .lines()
+            .skip(1)
+            .zip(stdout_with.lines().skip(1))
+        {
+            let parts1: Vec<&str> = line1.split('\t').collect();
+            let parts2: Vec<&str> = line2.split('\t').collect();
+
+            // Same genome name
+            assert_eq!(parts1[0], parts2[0]);
+            // Same mean
+            assert_eq!(parts1[1], parts2[1], "Mean changed for {}", parts1[0]);
+            // Same covered_fraction
+            assert_eq!(
+                parts1[2], parts2[2],
+                "Covered fraction changed for {}",
+                parts1[0]
+            );
+        }
+    }
+}
