@@ -2,6 +2,7 @@ pub mod bam_generator;
 pub mod cli;
 pub mod contig;
 pub mod coverage_printer;
+pub mod coverage_profile_writer;
 pub mod coverage_takers;
 pub mod external_command_checker;
 pub mod filter;

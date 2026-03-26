@@ -6,14 +6,17 @@ use std::process;
 use FlagFilter;
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::str;
 
 use bam_generator::*;
+use coverage_profile_writer::CoverageProfileWriter;
 use coverage_takers::*;
 use genomes_and_contigs::GenomesAndContigs;
 use mosdepth_genome_coverage_estimators::*;
 use ReadsMapped;
 
+#[allow(clippy::too_many_arguments)]
 pub fn mosdepth_genome_coverage_with_contig_names<
     R: NamedBamReader,
     G: NamedBamReaderGenerator<R>,
@@ -26,6 +29,7 @@ pub fn mosdepth_genome_coverage_with_contig_names<
     flag_filters: &FlagFilter,
     coverage_estimators: &mut [CoverageEstimator],
     threads: u16,
+    coverage_profile_dir: Option<&Path>,
 ) -> Vec<ReadsMapped> {
     let mut reads_mapped_vector = vec![];
     let mut is_first_bam = true;
@@ -36,6 +40,13 @@ pub fn mosdepth_genome_coverage_with_contig_names<
         let stoit_name = &(bam_generated.name().to_string());
         debug!("Working on stoit {stoit_name}");
         coverage_taker.start_stoit(stoit_name);
+
+        // Create per-sample BedGraph profile writer if requested
+        let mut profile_writer = coverage_profile_dir.map(|dir| {
+            let path = dir.join(format!("{}.bedgraph.gz", stoit_name));
+            CoverageProfileWriter::new(&path)
+        });
+
         let header = bam_generated.header().clone();
         let target_names = header.target_names();
 
@@ -151,6 +162,12 @@ pub fn mosdepth_genome_coverage_with_contig_names<
                                     sum_identity_in_current_contig,
                                 );
                             }
+                            // Write BedGraph profile for this contig
+                            if let Some(ref mut writer) = profile_writer {
+                                let contig_name =
+                                    str::from_utf8(target_names[last_tid as usize]).unwrap();
+                                writer.write_contig(contig_name, &ups_and_downs);
+                            }
                         }
                     }
 
@@ -245,6 +262,11 @@ pub fn mosdepth_genome_coverage_with_contig_names<
                         sum_identity_in_current_contig,
                     )
                 }
+                // Write BedGraph profile for the last contig
+                if let Some(ref mut writer) = profile_writer {
+                    let contig_name = str::from_utf8(target_names[last_tid as usize]).unwrap();
+                    writer.write_contig(contig_name, &ups_and_downs);
+                }
             }
 
             // Print the coverages of each genome
@@ -315,6 +337,11 @@ pub fn mosdepth_genome_coverage_with_contig_names<
             (reads_mapped.num_mapped_reads * 100) as f64 / reads_mapped.num_reads as f64
         );
         reads_mapped_vector.push(reads_mapped);
+
+        // Finalize the BedGraph profile writer (flush bgzf + create tabix index)
+        if let Some(writer) = profile_writer.take() {
+            writer.finish();
+        }
 
         bam_generated.finish();
     }
@@ -1042,6 +1069,7 @@ mod tests {
                 &flags,
                 coverage_estimators,
                 1,
+                None,
             );
         }
         assert_eq!(expected, std::fs::read_to_string(tf.path()).unwrap());
@@ -1079,6 +1107,7 @@ mod tests {
                 &flags,
                 coverage_estimators,
                 1,
+                None,
             );
         }
         assert_eq!(expected, std::fs::read_to_string(tf.path()).unwrap());

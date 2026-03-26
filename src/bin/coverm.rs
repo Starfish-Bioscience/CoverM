@@ -1252,18 +1252,32 @@ fn run_genome<
             threads,
         ),
 
-        false => match genomes_and_contigs_option {
-            Some(gc) => coverm::genome::mosdepth_genome_coverage_with_contig_names(
-                bam_generators,
-                gc,
-                &mut estimators_and_taker.taker,
-                print_zeros,
-                &flag_filter,
-                &mut estimators_and_taker.estimators,
-                threads,
-            ),
-            None => unreachable!(),
-        },
+        false => {
+            // Set up coverage profile output directory if requested
+            let coverage_profile_dir = m.get_one::<String>("coverage-profile").map(|dir| {
+                let path = std::path::Path::new(dir);
+                if !path.exists() {
+                    std::fs::create_dir_all(path).unwrap_or_else(|e| {
+                        panic!("Failed to create coverage profile directory {}: {}", dir, e)
+                    });
+                }
+                path.to_path_buf()
+            });
+
+            match genomes_and_contigs_option {
+                Some(gc) => coverm::genome::mosdepth_genome_coverage_with_contig_names(
+                    bam_generators,
+                    gc,
+                    &mut estimators_and_taker.taker,
+                    print_zeros,
+                    &flag_filter,
+                    &mut estimators_and_taker.estimators,
+                    threads,
+                    coverage_profile_dir.as_deref(),
+                ),
+                None => unreachable!(),
+            }
+        }
     };
 
     debug!("Finalising printing ..");

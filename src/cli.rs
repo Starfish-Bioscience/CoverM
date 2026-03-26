@@ -829,6 +829,11 @@ pub fn genome_full_help() -> Manual {
                 Shorter segments are reclassified as uncovered. \
                 {}", default_roff("1"))
             ))
+            .option(Opt::new("DIR").long("--coverage-profile").help(
+                "Output directory for per-sample BedGraph coverage profiles \
+                (bgzf compressed + tabix indexed). One file per sample: \
+                <DIR>/<sample>.bedgraph.gz"
+            ))
             .option(Opt::new("FRACTION").long("--min-covered-fraction").help(
                 &format!("Genomes with less covered bases than this are \
                 reported as having zero coverage. \
@@ -1469,6 +1474,15 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                             "Minimum length of a covered segment to be counted as an island \
                                for spatial metrics (islands_per_mbp, max_gap, gap_fraction). \
                                Shorter segments are reclassified as uncovered.",
+                        ),
+                )
+                .arg(
+                    Arg::new("coverage-profile")
+                        .long("coverage-profile")
+                        .value_parser(clap::value_parser!(String))
+                        .help(
+                            "Output directory for per-sample BedGraph coverage profiles \
+                             (bgzf compressed + tabix indexed). One file per sample.",
                         ),
                 )
                 .arg(
