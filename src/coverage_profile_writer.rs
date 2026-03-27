@@ -364,4 +364,59 @@ mod tests {
         assert!(path.exists(), "BigWig should exist");
         assert!(!temp_path.exists(), "Temp BedGraph should be cleaned up");
     }
+
+    #[test]
+    fn test_contigs_in_non_lexicographic_order() {
+        // Simulate BAM tid order: contigs are NOT in lexicographic order.
+        // This is the real-world case for multi-contig MAGs.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bw");
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        // Write contigs in non-lexicographic order (as a BAM would)
+        writer.write_contig("contig_10", &make_ups_and_downs(100, &[(10, 90, 5)]));
+        writer.write_contig("contig_2", &make_ups_and_downs(200, &[(0, 200, 3)]));
+        writer.write_contig("contig_1", &make_ups_and_downs(150, &[(50, 100, 8)]));
+        writer.write_contig("contig_20", &make_ups_and_downs(80, &[(10, 70, 2)]));
+        writer.finish();
+
+        assert!(
+            path.exists(),
+            "BigWig should be created despite non-lexicographic order"
+        );
+
+        // Verify all 4 contigs are present and readable
+        let reader = bigtools::BigWigRead::open_file(&path).unwrap();
+        let chroms = reader.chroms().to_vec();
+        assert_eq!(chroms.len(), 4, "All 4 contigs should be in BigWig");
+
+        let chrom_names: Vec<_> = chroms.iter().map(|c| c.name.clone()).collect();
+        assert!(chrom_names.contains(&"contig_1".to_string()));
+        assert!(chrom_names.contains(&"contig_2".to_string()));
+        assert!(chrom_names.contains(&"contig_10".to_string()));
+        assert!(chrom_names.contains(&"contig_20".to_string()));
+    }
+
+    #[test]
+    fn test_many_contigs_non_lexicographic() {
+        // Simulate a real MAG with 50 contigs in BAM tid order (numeric, not lexicographic)
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.bw");
+
+        let mut writer = CoverageProfileWriter::new(&path);
+        for i in 0..50 {
+            // BAM tid order: 0, 1, 2, ..., 49
+            // Lexicographic order would be: 0, 1, 10, 11, ..., 19, 2, 20, ...
+            let name = format!("scaffold_{}", i);
+            let ud = make_ups_and_downs(500, &[(i * 5, i * 5 + 100, 3)]);
+            writer.write_contig(&name, &ud);
+        }
+        writer.finish();
+
+        assert!(path.exists());
+
+        let reader = bigtools::BigWigRead::open_file(&path).unwrap();
+        let chroms = reader.chroms().to_vec();
+        assert_eq!(chroms.len(), 50, "All 50 contigs should be in BigWig");
+    }
 }
