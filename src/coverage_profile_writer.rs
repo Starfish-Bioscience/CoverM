@@ -129,7 +129,7 @@ impl CoverageProfileWriter {
         let output_path = self.output_path;
         let temp_path = self.temp_path;
 
-        let outfile = bigtools::BigWigWrite::create_file(&output_path, self.chrom_sizes)
+        let mut outfile = bigtools::BigWigWrite::create_file(&output_path, self.chrom_sizes)
             .unwrap_or_else(|e| {
                 panic!(
                     "Failed to create BigWig file at {}: {}",
@@ -137,13 +137,18 @@ impl CoverageProfileWriter {
                     e
                 )
             });
+        // Contigs come in BAM tid order, not lexicographic order.
+        // InputSortType::START allows out-of-order chromosomes while still
+        // requiring sorted positions within each chromosome (which we guarantee).
+        outfile.options.input_sort_type = bigtools::InputSortType::START;
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .build()
             .expect("Failed to create tokio runtime for BigWig writing");
 
-        let data = bigtools::beddata::BedParserStreamingIterator::from_bedgraph_file(infile, false);
+        // allow_out_of_order_chroms=true matches InputSortType::START
+        let data = bigtools::beddata::BedParserStreamingIterator::from_bedgraph_file(infile, true);
 
         outfile.write(data, runtime).unwrap_or_else(|e| {
             panic!(
