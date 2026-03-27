@@ -43,7 +43,7 @@ pub fn mosdepth_genome_coverage_with_contig_names<
 
         // Create per-sample BedGraph profile writer if requested
         let mut profile_writer = coverage_profile_dir.map(|dir| {
-            let path = dir.join(format!("{}.bedgraph.gz", stoit_name));
+            let path = dir.join(format!("{}.bw", stoit_name));
             CoverageProfileWriter::new(&path)
         });
 
@@ -480,7 +480,7 @@ pub fn mosdepth_genome_coverage<
 
         // Create per-sample BedGraph profile writer if requested
         let mut profile_writer = coverage_profile_dir.map(|dir| {
-            let path = dir.join(format!("{}.bedgraph.gz", stoit_name));
+            let path = dir.join(format!("{}.bw", stoit_name));
             CoverageProfileWriter::new(&path)
         });
 

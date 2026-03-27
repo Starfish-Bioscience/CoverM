@@ -830,9 +830,8 @@ pub fn genome_full_help() -> Manual {
                 {}", default_roff("1"))
             ))
             .option(Opt::new("DIR").long("--coverage-profile").help(
-                "Output directory for per-sample BedGraph coverage profiles \
-                (bgzf compressed + tabix indexed). One file per sample: \
-                <DIR>/<sample>.bedgraph.gz"
+                "Output directory for per-sample BigWig coverage profiles. \
+                One file per sample: <DIR>/<sample>.bw"
             ))
             .option(Opt::new("FRACTION").long("--min-covered-fraction").help(
                 &format!("Genomes with less covered bases than this are \
@@ -1481,8 +1480,8 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                         .long("coverage-profile")
                         .value_parser(clap::value_parser!(String))
                         .help(
-                            "Output directory for per-sample BedGraph coverage profiles \
-                             (bgzf compressed + tabix indexed). One file per sample.",
+                            "Output directory for per-sample BigWig coverage profiles. \
+                             One file per sample: <DIR>/<sample>.bw",
                         ),
                 )
                 .arg(

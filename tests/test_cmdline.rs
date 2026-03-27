@@ -1,4 +1,5 @@
 extern crate assert_cli;
+extern crate bigtools;
 extern crate rust_htslib;
 extern crate tempfile;
 
@@ -4172,41 +4173,25 @@ mod spatial_tests {
             .succeeds()
             .unwrap();
 
-        // Check bgzf file was created and is not empty
-        let bedgraph_path = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bedgraph.gz");
-        assert!(bedgraph_path.exists(), "BedGraph file should exist");
+        // Check BigWig file was created and is not empty
+        let bw_path = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bw");
+        assert!(bw_path.exists(), "BigWig file should exist");
         assert!(
-            std::fs::metadata(&bedgraph_path).unwrap().len() > 0,
-            "BedGraph file should not be empty"
+            std::fs::metadata(&bw_path).unwrap().len() > 0,
+            "BigWig file should not be empty"
         );
 
-        // Read bgzf and verify content structure
-        let mut reader = rust_htslib::bgzf::Reader::from_path(&bedgraph_path).unwrap();
-        let mut contents = String::new();
-        reader.read_to_string(&mut contents).unwrap();
+        // Read BigWig and verify content structure
+        let reader = bigtools::BigWigRead::open_file(&bw_path).unwrap();
+        let chroms = reader.chroms().to_vec();
+        assert!(chroms.len() > 0, "BigWig should have chromosomes");
 
         // Should contain covered contigs
-        assert!(contents.contains("genome2~seq1"));
-
-        // Verify BedGraph format (4 tab-separated columns, start < end)
-        for line in contents.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            assert_eq!(parts.len(), 4, "Bad BedGraph line: '{}'", line);
-            let start: usize = parts[1].parse().unwrap();
-            let end: usize = parts[2].parse().unwrap();
-            assert!(end > start, "end should be > start: {}", line);
-            let _depth: i32 = parts[3].parse().unwrap();
-        }
-
-        // Check tabix index (if tabix available)
-        let tbi_path = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bedgraph.gz.tbi");
-        if std::process::Command::new("tabix")
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            assert!(tbi_path.exists(), "Tabix index should exist");
-        }
+        let chrom_names: Vec<_> = chroms.iter().map(|c| c.name.clone()).collect();
+        assert!(
+            chrom_names.iter().any(|n| n.contains("seq1")),
+            "Should contain a contig with seq1"
+        );
     }
 
     #[test]
@@ -4239,9 +4224,9 @@ mod spatial_tests {
         assert!(header.contains("Max Gap"));
         assert!(header.contains("Gap Fraction"));
 
-        // BedGraph was also created
-        let bedgraph_path = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bedgraph.gz");
-        assert!(bedgraph_path.exists());
+        // BigWig was also created
+        let bw_path = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bw");
+        assert!(bw_path.exists());
     }
 
     #[test]

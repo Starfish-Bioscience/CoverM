@@ -38,9 +38,12 @@ bird_tool_utils-man = "0.4.0"
 roff = "0.2.*"
 needletail = "0.5.*"
 csv = "1.*"
+bigtools = { version = "0.5.*", features = ["write"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
 assert_cli = "0.6.*"
+bigtools = { version = "0.5.*", features = ["read"] }
 # Run things before commit but not push
 cargo-husky = { version="1", default-features = false, features=["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
 
