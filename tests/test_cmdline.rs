@@ -4286,4 +4286,178 @@ mod spatial_tests {
             );
         }
     }
+
+    #[test]
+    fn test_multi_bam_produces_multiple_bigwig() {
+        // Two BAM files → two .bw files in the output directory
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let profile_dir = tmpdir.path().join("profiles");
+
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "-b",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "tests/data/7seqs.reads_for_seq1.bam",
+                "--genome-definition",
+                "tests/data/7seqs.definition",
+                "-m",
+                "mean",
+                "--coverage-profile",
+                profile_dir.to_str().unwrap(),
+                "--min-covered-fraction",
+                "0",
+            ])
+            .succeeds()
+            .unwrap();
+
+        let bw1 = profile_dir.join("7seqs.reads_for_seq1_and_seq2.bw");
+        let bw2 = profile_dir.join("7seqs.reads_for_seq1.bw");
+        assert!(bw1.exists(), "First BigWig should exist: {:?}", bw1);
+        assert!(bw2.exists(), "Second BigWig should exist: {:?}", bw2);
+
+        // Both should be valid BigWig files
+        let reader1 = bigtools::BigWigRead::open_file(&bw1).unwrap();
+        assert!(reader1.chroms().len() > 0);
+        let reader2 = bigtools::BigWigRead::open_file(&bw2).unwrap();
+        assert!(reader2.chroms().len() > 0);
+    }
+
+    #[test]
+    fn test_genome_fasta_files_produces_bigwig() {
+        // Test the --genome-fasta-files code path (mosdepth_genome_coverage)
+        // This is the path that had the missing writer bug
+        let tmpdir = tempfile::TempDir::new().unwrap();
+        let profile_dir = tmpdir.path().join("profiles");
+
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "-b",
+                "tests/data/2seqs.reads_for_seq1_and_seq2.bam",
+                "--genome-fasta-files",
+                "tests/data/2seqs.fasta",
+                "-m",
+                "mean",
+                "islands_per_mbp",
+                "max_gap",
+                "--coverage-profile",
+                profile_dir.to_str().unwrap(),
+                "--min-covered-fraction",
+                "0",
+                "--contig-end-exclusion",
+                "0",
+            ])
+            .succeeds()
+            .unwrap();
+
+        // Find the .bw file (name derived from BAM stoit_name)
+        let bw_files: Vec<_> = std::fs::read_dir(&profile_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "bw"))
+            .collect();
+        assert_eq!(
+            bw_files.len(),
+            1,
+            "Should produce exactly one .bw file, found: {:?}",
+            bw_files
+        );
+
+        // Verify it's a valid BigWig
+        let bw_path = bw_files[0].path();
+        let reader = bigtools::BigWigRead::open_file(&bw_path).unwrap();
+        let chroms = reader.chroms().to_vec();
+        assert!(chroms.len() > 0, "BigWig should have chromosomes");
+    }
+
+    #[test]
+    fn test_contig_mode_rejects_spatial_metrics() {
+        // Spatial metrics should not be accepted in contig mode
+        Assert::main_binary()
+            .with_args(&[
+                "contig",
+                "-b",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "-m",
+                "islands_per_mbp",
+            ])
+            .fails()
+            .stderr()
+            .contains("invalid value 'islands_per_mbp'")
+            .unwrap();
+    }
+
+    #[test]
+    fn test_contig_mode_rejects_max_gap() {
+        Assert::main_binary()
+            .with_args(&[
+                "contig",
+                "-b",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "-m",
+                "max_gap",
+            ])
+            .fails()
+            .stderr()
+            .contains("invalid value 'max_gap'")
+            .unwrap();
+    }
+
+    #[test]
+    fn test_contig_mode_rejects_gap_fraction() {
+        Assert::main_binary()
+            .with_args(&[
+                "contig",
+                "-b",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "-m",
+                "gap_fraction",
+            ])
+            .fails()
+            .stderr()
+            .contains("invalid value 'gap_fraction'")
+            .unwrap();
+    }
+
+    #[test]
+    fn test_dense_output_with_spatial_metrics() {
+        let stdout = run_coverm_genome(&[
+            "genome",
+            "-b",
+            "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+            "--genome-definition",
+            "tests/data/7seqs.definition",
+            "-m",
+            "mean",
+            "islands_per_mbp",
+            "max_gap",
+            "gap_fraction",
+            "--min-covered-fraction",
+            "0",
+            "--contig-end-exclusion",
+            "0",
+            "--output-format",
+            "dense",
+        ]);
+
+        let header = stdout.lines().next().unwrap();
+        assert!(
+            header.contains("Islands per Mbp"),
+            "Missing in dense header"
+        );
+        assert!(header.contains("Max Gap"), "Missing in dense header");
+        assert!(header.contains("Gap Fraction"), "Missing in dense header");
+
+        // All data lines should have the same number of columns as header
+        let header_cols = header.split('\t').count();
+        for line in stdout.lines().skip(1) {
+            let cols = line.split('\t').count();
+            assert_eq!(
+                cols, header_cols,
+                "Column count mismatch: header has {}, data has {} in line: {}",
+                header_cols, cols, line
+            );
+        }
+    }
 }

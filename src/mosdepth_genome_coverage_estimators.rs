@@ -2055,4 +2055,98 @@ mod tests {
         // 1 / (1000/1e6) = 1000
         assert!((coverage - 1000.0).abs() < 1.0, "got {}", coverage);
     }
+
+    // =========================================================================
+    // Tests for column_headers(), copy(), num_mapped_reads()
+    // =========================================================================
+
+    #[test]
+    fn test_column_headers() {
+        let est1 = CoverageEstimator::new_estimator_islands_per_mbp(0.0, 0, 1);
+        assert_eq!(est1.column_headers(), vec!["Islands per Mbp"]);
+
+        let est2 = CoverageEstimator::new_estimator_max_gap(0.0, 0, 1);
+        assert_eq!(est2.column_headers(), vec!["Max Gap"]);
+
+        let est3 = CoverageEstimator::new_estimator_gap_fraction(0.0, 0, 1);
+        assert_eq!(est3.column_headers(), vec!["Gap Fraction"]);
+    }
+
+    #[test]
+    fn test_copy_preserves_config() {
+        let est = CoverageEstimator::new_estimator_islands_per_mbp(0.3, 75, 50);
+        // Add some data to ensure accumulators are non-zero
+        let mut est_mut = est;
+        let ud = make_ups_and_downs(1000, &[(10, 500, 5)]);
+        est_mut.add_contig(&ud, 10, 0, 0.0);
+
+        // Copy should reset accumulators but preserve config
+        let mut copied = est_mut.copy();
+        let coverage = copied.calculate_coverage(&[]);
+        // Copied estimator has no data → should return 0.0
+        assert_eq!(coverage, 0.0, "Copied estimator should have no data");
+
+        // Verify config is preserved by checking it works with the same params
+        let mut copied_mut = copied;
+        copied_mut.add_contig(&ud, 10, 0, 0.0);
+        let coverage = copied_mut.calculate_coverage(&[]);
+        assert!(
+            coverage > 0.0,
+            "Copied estimator should work after adding data"
+        );
+    }
+
+    #[test]
+    fn test_copy_preserves_config_max_gap() {
+        let est = CoverageEstimator::new_estimator_max_gap(0.0, 10, 25);
+        let copied = est.copy();
+        // Verify the copy works (config preserved)
+        let mut copied_mut = copied;
+        let ud = make_ups_and_downs(200, &[(20, 50, 5), (100, 150, 5)]);
+        copied_mut.add_contig(&ud, 10, 0, 0.0);
+        let coverage = copied_mut.calculate_coverage(&[]);
+        assert!(coverage > 0.0, "Copied max_gap estimator should work");
+    }
+
+    #[test]
+    fn test_copy_preserves_config_gap_fraction() {
+        let est = CoverageEstimator::new_estimator_gap_fraction(0.0, 5, 10);
+        let copied = est.copy();
+        let mut copied_mut = copied;
+        let ud = make_ups_and_downs(200, &[(20, 50, 5), (100, 150, 5)]);
+        copied_mut.add_contig(&ud, 10, 0, 0.0);
+        let coverage = copied_mut.calculate_coverage(&[]);
+        assert!(coverage > 0.0, "Copied gap_fraction estimator should work");
+    }
+
+    #[test]
+    fn test_num_mapped_reads_accumulates() {
+        let mut est = CoverageEstimator::new_estimator_islands_per_mbp(0.0, 0, 1);
+
+        let ud1 = make_ups_and_downs(1000, &[(10, 500, 5)]);
+        est.add_contig(&ud1, 100, 0, 0.0);
+
+        let ud2 = make_ups_and_downs(1000, &[(10, 500, 5)]);
+        est.add_contig(&ud2, 200, 0, 0.0);
+
+        // Should accumulate: 100 + 200 = 300
+        assert_eq!(est.num_mapped_reads(), 300);
+    }
+
+    #[test]
+    fn test_num_mapped_reads_max_gap() {
+        let mut est = CoverageEstimator::new_estimator_max_gap(0.0, 0, 1);
+        let ud = make_ups_and_downs(100, &[(10, 90, 5)]);
+        est.add_contig(&ud, 42, 0, 0.0);
+        assert_eq!(est.num_mapped_reads(), 42);
+    }
+
+    #[test]
+    fn test_num_mapped_reads_gap_fraction() {
+        let mut est = CoverageEstimator::new_estimator_gap_fraction(0.0, 0, 1);
+        let ud = make_ups_and_downs(100, &[(10, 90, 5)]);
+        est.add_contig(&ud, 55, 0, 0.0);
+        est.add_contig(&ud, 45, 0, 0.0);
+        assert_eq!(est.num_mapped_reads(), 100);
+    }
 }
