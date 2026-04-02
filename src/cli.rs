@@ -1470,6 +1470,42 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                 )
                 .arg(Arg::new("output-file").long("output-file").short('o'))
                 .arg(
+                    Arg::new("regions-bed")
+                        .long("regions-bed")
+                        .help(
+                            "BED file (4 columns: chrom start end label). \
+                             Enables per-region bedGraph output (--output-bedcov) \
+                             and will add NB_LABELS×NB_METHODS extra columns to the \
+                             main output in a future release. \
+                             Incompatible with --contig-end-exclusion.",
+                        )
+                        .value_name("FILE"),
+                )
+                .arg(
+                    Arg::new("output-bedcov")
+                        .long("output-bedcov")
+                        .help(
+                            "Write multi-track bedGraph files to DIR (requires --regions-bed). \
+                             One file per sample: {DIR}/{sample_id}.bedgraph. \
+                             Each file contains one bedGraph track per label (alphabetical order). \
+                             Compatible with IGV, trackViewer (R/Bioconductor), pyGenomeTracks. \
+                             Note: rtracklayer::import.bedGraph() does not support multi-track \
+                             files. Use --output-bedcov-compress for gzip output (.bedgraph.gz).",
+                        )
+                        .value_name("DIR")
+                        .requires("regions-bed"),
+                )
+                .arg(
+                    Arg::new("output-bedcov-compress")
+                        .long("output-bedcov-compress")
+                        .help(
+                            "Compress bedGraph output files with gzip (.bedgraph.gz). \
+                             Requires --output-bedcov.",
+                        )
+                        .action(clap::ArgAction::SetTrue)
+                        .requires("output-bedcov"),
+                )
+                .arg(
                     Arg::new("output-format")
                         .long("output-format")
                         .value_parser(["sparse", "dense"])
