@@ -7,6 +7,10 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use rust_htslib::bam;
 
+use crate::mosdepth_genome_coverage_estimators::{
+    CoverageEstimator, MosdepthGenomeCoverageEstimator,
+};
+
 // ---------------------------------------------------------------------------
 // Data structures
 // ---------------------------------------------------------------------------
@@ -184,6 +188,67 @@ impl ParsedBed {
 }
 
 // ---------------------------------------------------------------------------
+// make_label_estimators — create fresh per-region estimators from templates
+// ---------------------------------------------------------------------------
+
+/// Build a set of fresh `CoverageEstimator`s suitable for per-region
+/// accumulation, derived from the user-specified method templates.
+///
+/// All estimators are forced to `contig_end_exclusion = 0` and
+/// `min_fraction_covered_bases = 0.0`, because:
+/// - `--contig-end-exclusion` is CLI-incompatible with `--regions-bed`
+/// - Minimum-fraction filtering does not make sense per-region
+///
+/// `coverage_histogram`, `anir`, and `strobealign-aemb` are rejected at the
+/// CLI level before this function is called.
+pub fn make_label_estimators(templates: &[CoverageEstimator]) -> Vec<CoverageEstimator> {
+    templates
+        .iter()
+        .map(|e| match e {
+            CoverageEstimator::MeanGenomeCoverageEstimator {
+                exclude_mismatches, ..
+            } => CoverageEstimator::new_estimator_mean(0.0, 0, *exclude_mismatches),
+            CoverageEstimator::TrimmedMeanGenomeCoverageEstimator { min, max, .. } => {
+                CoverageEstimator::new_estimator_trimmed_mean(*min, *max, 0.0, 0)
+            }
+            CoverageEstimator::CoverageFractionGenomeCoverageEstimator { .. } => {
+                CoverageEstimator::new_estimator_covered_fraction(0.0)
+            }
+            CoverageEstimator::NumCoveredBasesCoverageEstimator { .. } => {
+                CoverageEstimator::new_estimator_covered_bases(0.0)
+            }
+            CoverageEstimator::VarianceGenomeCoverageEstimator { .. } => {
+                CoverageEstimator::new_estimator_variance(0.0, 0)
+            }
+            CoverageEstimator::RPKMCoverageEstimator { .. } => {
+                CoverageEstimator::new_estimator_rpkm(0.0)
+            }
+            CoverageEstimator::TPMCoverageEstimator { .. } => {
+                CoverageEstimator::new_estimator_tpm(0.0)
+            }
+            CoverageEstimator::ReferenceLengthCalculator { .. } => {
+                CoverageEstimator::new_estimator_length()
+            }
+            CoverageEstimator::ReadCountCalculator { .. } => {
+                CoverageEstimator::new_estimator_read_count()
+            }
+            CoverageEstimator::ReadsPerBaseCalculator { .. } => {
+                CoverageEstimator::new_estimator_reads_per_base()
+            }
+            CoverageEstimator::PileupCountsGenomeCoverageEstimator { .. } => {
+                unreachable!("coverage_histogram is incompatible with --regions-bed")
+            }
+            CoverageEstimator::AverageIdentityEstimator { .. } => {
+                unreachable!("anir is incompatible with --regions-bed")
+            }
+            CoverageEstimator::StrobealignAembEstimator { .. } => {
+                unreachable!("strobealign-aemb is incompatible with --regions-bed")
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // BedIndex — per-BAM tid → regions mapping (rebuilt for each BAM)
 // ---------------------------------------------------------------------------
 
@@ -209,12 +274,22 @@ pub struct BedcovAccumulator {
     pub current_index: BedIndex,
     /// sum of coverage per region (reset at start of each BAM)
     pub region_sums: Vec<i64>,
+    /// Feature 2 — method templates (with end_excl=0, min_frac=0)
+    pub label_estimator_templates: Vec<CoverageEstimator>,
+    /// Feature 2 — per-genome per-label per-method estimators (lazily created)
+    /// Key: genome_name, Value: [label_idx][method_idx]
+    pub genome_label_estimators: HashMap<String, Vec<Vec<CoverageEstimator>>>,
     /// prefix-sum scratch (reused, never shrunk)
     pcov_scratch: Vec<i64>,
+    /// sub_ups scratch for Feature 2 (reused, never shrunk)
+    sub_ups_scratch: Vec<i32>,
 }
 
 impl BedcovAccumulator {
-    pub fn new(parsed_bed: ParsedBed) -> BedcovAccumulator {
+    pub fn new(
+        parsed_bed: ParsedBed,
+        label_estimator_templates: Vec<CoverageEstimator>,
+    ) -> BedcovAccumulator {
         let n = parsed_bed.all_regions.len();
         BedcovAccumulator {
             parsed_bed,
@@ -222,7 +297,10 @@ impl BedcovAccumulator {
                 regions_by_tid: HashMap::new(),
             },
             region_sums: vec![0i64; n],
+            label_estimator_templates,
+            genome_label_estimators: HashMap::new(),
             pcov_scratch: Vec::new(),
+            sub_ups_scratch: Vec::new(),
         }
     }
 
@@ -250,15 +328,21 @@ impl BedcovAccumulator {
             }
         }
         self.current_index = BedIndex { regions_by_tid };
+        self.genome_label_estimators.clear();
     }
 
     /// Accumulate coverage sums for all BED regions on this contig.
     ///
     /// `ups_and_downs` is the mosdepth difference array: coverage at position i =
     /// prefix_sum(ups_and_downs[0..=i]).
-    pub fn process_contig(&mut self, tid: u32, ups_and_downs: &[i32]) {
-        let regions = match self.current_index.regions_by_tid.get(&tid) {
-            Some(r) => r,
+    ///
+    /// `genome_name` is used to key the per-genome label estimators (Feature 2).
+    pub fn process_contig(&mut self, tid: u32, genome_name: &str, ups_and_downs: &[i32]) {
+        // Move regions out of the HashMap so we release the borrow on
+        // `current_index` before entering the loop.  We put them back afterwards
+        // to avoid any heap allocation (no clone needed).
+        let regions = match self.current_index.regions_by_tid.get_mut(&tid) {
+            Some(slot) => std::mem::take(slot),
             None => return,
         };
 
@@ -276,13 +360,94 @@ impl BedcovAccumulator {
             self.pcov_scratch[i + 1] = self.pcov_scratch[i] + running;
         }
 
-        for region in regions {
+        // Feature 2 — lazily create the genome entry if templates are configured
+        if !self.label_estimator_templates.is_empty()
+            && !self.genome_label_estimators.contains_key(genome_name)
+        {
+            let n_labels = self.parsed_bed.labels.len();
+            let templates = self.label_estimator_templates.clone();
+            let fresh: Vec<Vec<CoverageEstimator>> =
+                (0..n_labels).map(|_| templates.clone()).collect();
+            self.genome_label_estimators
+                .insert(genome_name.to_string(), fresh);
+        }
+
+        for region in &regions {
             let s = (region.start as usize).min(n);
             let e = (region.end as usize).min(n);
             if s >= e {
+                if region.end as usize > n {
+                    warn!(
+                        "BED region [{},{}) on contig tid={} extends beyond contig length {}; \
+                         region is skipped",
+                        region.start, region.end, tid, n
+                    );
+                }
                 continue;
             }
+
+            // Feature 1 — accumulate region coverage sum
             self.region_sums[region.global_idx] += self.pcov_scratch[e] - self.pcov_scratch[s];
+
+            // Feature 2 — call add_contig on per-label estimators via sub_ups.
+            // We need to borrow both `sub_ups_scratch` (immutably, after writing)
+            // and `genome_label_estimators` (mutably).  Destructuring `self` into
+            // its fields makes the disjointness visible to the borrow checker.
+            if !self.label_estimator_templates.is_empty() {
+                let len = e - s;
+                if self.sub_ups_scratch.len() < len {
+                    self.sub_ups_scratch.resize(len, 0);
+                }
+                // sub_ups[0] = absolute coverage at position s
+                self.sub_ups_scratch[0] = (self.pcov_scratch[s + 1] - self.pcov_scratch[s]) as i32;
+                // sub_ups[i] = ups_and_downs[s+i] for i >= 1
+                // Invariant: prefix_sum(sub_ups)[j] = coverage[s+j]  ✓
+                self.sub_ups_scratch[1..len].copy_from_slice(&ups_and_downs[(s + 1)..(s + len)]);
+                // Destructure to let the borrow checker see disjoint fields.
+                let BedcovAccumulator {
+                    sub_ups_scratch,
+                    genome_label_estimators,
+                    ..
+                } = self;
+                let sub_slice = &sub_ups_scratch[..len];
+                let label_ests = genome_label_estimators.get_mut(genome_name).unwrap();
+                for est in label_ests[region.label_idx].iter_mut() {
+                    est.add_contig(sub_slice, 0, 0, 0.0);
+                }
+            }
+        }
+
+        // Restore regions into the HashMap (zero-cost move, no allocation).
+        if let Some(slot) = self.current_index.regions_by_tid.get_mut(&tid) {
+            *slot = regions;
+        }
+    }
+
+    /// Retrieve (and reset) per-label coverage values for a genome.
+    ///
+    /// Returns a `[label_idx][method_idx]` matrix of `f32` coverage values.
+    /// Returns an empty vec when `label_estimator_templates` is empty.
+    /// Returns all-zero rows when the genome had no BED regions.
+    pub fn take_label_coverages(&mut self, genome_name: &str) -> Vec<Vec<f32>> {
+        if self.label_estimator_templates.is_empty() {
+            return vec![];
+        }
+        match self.genome_label_estimators.remove(genome_name) {
+            None => {
+                // Genome had no BED regions — return zeros for all labels/methods
+                let n_labels = self.parsed_bed.labels.len();
+                let n_methods = self.label_estimator_templates.len();
+                vec![vec![0.0f32; n_methods]; n_labels]
+            }
+            Some(mut label_ests) => label_ests
+                .iter_mut()
+                .map(|method_ests| {
+                    method_ests
+                        .iter_mut()
+                        .map(|est| est.calculate_coverage(&[]))
+                        .collect()
+                })
+                .collect(),
         }
     }
 
@@ -392,7 +557,7 @@ mod tests {
     fn make_accumulator(bed_content: &str) -> BedcovAccumulator {
         let f = make_bed_file(bed_content);
         let parsed = ParsedBed::from_file(f.path().to_str().unwrap());
-        BedcovAccumulator::new(parsed)
+        BedcovAccumulator::new(parsed, vec![])
     }
 
     /// Build a fake BedIndex directly (no real BAM header needed).
@@ -423,7 +588,7 @@ mod tests {
         let mut acc = make_accumulator("chr1\t2\t7\tlabel_a\n");
         fake_index_tid0(&mut acc);
         let ups: Vec<i32> = vec![0, 0, 1, 0, 0, 0, -1, 0, 0, 0];
-        acc.process_contig(0, &ups);
+        acc.process_contig(0, "g1", &ups);
         assert_eq!(acc.region_sums[0], 4);
     }
 
@@ -433,7 +598,7 @@ mod tests {
         let mut acc = make_accumulator("chr1\t8\t15\tlabel_a\n");
         fake_index_tid0(&mut acc);
         let ups: Vec<i32> = vec![0, 0, 1, 0, 0, 0, -1, 0, 0, 0];
-        acc.process_contig(0, &ups);
+        acc.process_contig(0, "g1", &ups);
         // coverage at [8,10) = 0, so sum = 0
         assert_eq!(acc.region_sums[0], 0);
     }
@@ -443,7 +608,7 @@ mod tests {
         let mut acc = make_accumulator("chr1\t0\t10\tlabel_a\n");
         fake_index_tid0(&mut acc);
         let ups: Vec<i32> = vec![0; 10];
-        acc.process_contig(0, &ups);
+        acc.process_contig(0, "g1", &ups);
         assert_eq!(acc.region_sums[0], 0);
     }
 
@@ -456,7 +621,7 @@ mod tests {
         fake_index_tid0(&mut acc);
         // coverage = [1,1,1,0,0,2,2,2,0,0]
         let ups: Vec<i32> = vec![1, 0, 0, -1, 0, 2, 0, 0, -2, 0];
-        acc.process_contig(0, &ups);
+        acc.process_contig(0, "g1", &ups);
         // region0=[0,3): sum=3, region1=[5,8): sum=6
         assert_eq!(acc.region_sums[0], 3);
         assert_eq!(acc.region_sums[1], 6);
@@ -469,7 +634,7 @@ mod tests {
         fake_index_tid0(&mut acc);
         // uniform coverage = 1 everywhere
         let ups: Vec<i32> = vec![1, 0, 0, 0, 0, 0, 0, 0, -1, 0];
-        acc.process_contig(0, &ups);
+        acc.process_contig(0, "g1", &ups);
         assert_eq!(acc.region_sums[0], 5); // [0,5)
         assert_eq!(acc.region_sums[1], 5); // [3,8)
     }
@@ -488,7 +653,7 @@ mod tests {
         let mut acc = make_accumulator("chr1\t0\t5\tlabel_a\nchr1\t5\t10\tlabel_b\n");
         fake_index_tid0(&mut acc);
         let ups: Vec<i32> = vec![1, 0, 0, 0, 0, -1, 0, 0, 0, 0];
-        acc.process_contig(0, &ups);
+        acc.process_contig(0, "g1", &ups);
         assert_eq!(acc.region_sums[0], 5); // label_a
         assert_eq!(acc.region_sums[1], 0); // label_b (no coverage)
     }
@@ -498,7 +663,7 @@ mod tests {
         let mut acc = make_accumulator("chr1\t0\t5\tlabel_a\nchr1\t5\t10\tlabel_b\n");
         fake_index_tid0(&mut acc);
         let ups: Vec<i32> = vec![2, 0, 0, 0, 0, -2, 0, 0, 0, 0];
-        acc.process_contig(0, &ups);
+        acc.process_contig(0, "g1", &ups);
 
         let dir = tempfile::tempdir().unwrap();
         acc.finalise_bedcov("mysample", dir.path(), false);
@@ -511,5 +676,379 @@ mod tests {
         assert!(content.contains("chr1\t0\t5\t2.000000"));
         // label_b: mean = 0/5 = 0.0
         assert!(content.contains("chr1\t5\t10\t0.000000"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Feature 2 integration tests
+    // -----------------------------------------------------------------------
+
+    fn make_accumulator_with_estimators(
+        bed_content: &str,
+        templates: Vec<CoverageEstimator>,
+    ) -> BedcovAccumulator {
+        let f = make_bed_file(bed_content);
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap());
+        BedcovAccumulator::new(parsed, templates)
+    }
+
+    /// Feature 2: basic take_label_coverages with MeanGenomeCoverageEstimator.
+    /// BED: two labels, each one region.  Coverage is known from ups_and_downs.
+    #[test]
+    fn test_feature2_take_label_coverages_mean() {
+        // label_a: [0,5) — cov = [2,2,2,2,2], mean = 2.0
+        // label_b: [5,10) — cov = [0,0,0,0,0], mean = 0.0
+        let mut acc = make_accumulator_with_estimators(
+            "chr1\t0\t5\tlabel_a\nchr1\t5\t10\tlabel_b\n",
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+        );
+        fake_index_tid0(&mut acc);
+
+        let ups: Vec<i32> = vec![2, 0, 0, 0, 0, -2, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        // covs[label_idx][method_idx]
+        // labels sorted alphabetically: label_a=0, label_b=1
+        assert_eq!(covs.len(), 2, "expected 2 labels");
+        assert_eq!(covs[0].len(), 1, "expected 1 method");
+        assert!(
+            (covs[0][0] - 2.0).abs() < 1e-5,
+            "label_a mean: expected 2.0, got {}",
+            covs[0][0]
+        );
+        assert!(
+            covs[1][0].abs() < 1e-5,
+            "label_b mean: expected 0.0, got {}",
+            covs[1][0]
+        );
+    }
+
+    /// Feature 2: covered_fraction for a partial-coverage region.
+    #[test]
+    fn test_feature2_covered_fraction() {
+        // label_a: [0,10) — cov = [1,1,1,1,1,0,0,0,0,0], covered 5/10 = 0.5
+        let mut acc = make_accumulator_with_estimators(
+            "chr1\t0\t10\tlabel_a\n",
+            vec![CoverageEstimator::new_estimator_covered_fraction(0.0)],
+        );
+        fake_index_tid0(&mut acc);
+
+        let ups: Vec<i32> = vec![1, 0, 0, 0, 0, -1, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        assert!(
+            (covs[0][0] - 0.5).abs() < 1e-5,
+            "covered_fraction: expected 0.5, got {}",
+            covs[0][0]
+        );
+    }
+
+    /// Feature 2: two methods, two labels — verify matrix dimensions and values.
+    #[test]
+    fn test_feature2_two_methods_two_labels() {
+        // label_a: [0,4) cov=[3,3,3,3]  mean=3.0, fraction=1.0
+        // label_b: [4,8) cov=[0,0,0,0]  mean=0.0, fraction=0.0
+        let mut acc = make_accumulator_with_estimators(
+            "chr1\t0\t4\tlabel_a\nchr1\t4\t8\tlabel_b\n",
+            vec![
+                CoverageEstimator::new_estimator_mean(0.0, 0, false),
+                CoverageEstimator::new_estimator_covered_fraction(0.0),
+            ],
+        );
+        fake_index_tid0(&mut acc);
+
+        let ups: Vec<i32> = vec![3, 0, 0, 0, -3, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        assert_eq!(covs.len(), 2, "2 labels");
+        assert_eq!(covs[0].len(), 2, "2 methods");
+        // label_a (idx 0): mean=3.0, frac=1.0
+        assert!((covs[0][0] - 3.0).abs() < 1e-5, "label_a mean");
+        assert!((covs[0][1] - 1.0).abs() < 1e-5, "label_a fraction");
+        // label_b (idx 1): mean=0.0, frac=0.0
+        assert!(covs[1][0].abs() < 1e-5, "label_b mean");
+        assert!(covs[1][1].abs() < 1e-5, "label_b fraction");
+    }
+
+    /// Feature 2: multiple contigs same genome accumulate correctly.
+    #[test]
+    fn test_feature2_multi_contig_accumulation() {
+        // label_a spans two contigs (tid=0 and tid=1).
+        // After two process_contig calls, take_label_coverages returns the sum.
+        // tid=0: [0,5)  ups=[1,0,0,0,-1,…] cov=[1,1,1,1,0], sum_cov=4
+        // tid=1: [0,5)  ups=[2,0,0,0,-2,…] cov=[2,2,2,2,0], sum_cov=8
+        // Total observed bases = 10, total sum = 12 → mean = 1.2
+        let f = make_bed_file("chr1\t0\t5\tlabel_a\nchr2\t0\t5\tlabel_a\n");
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap());
+        let mut acc = BedcovAccumulator::new(
+            parsed,
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+        );
+
+        // Build a two-tid index manually
+        let mut regions_by_tid: HashMap<u32, Vec<IndexedRegion>> = HashMap::new();
+        let bed = &acc.parsed_bed;
+        // tid=0 → chr1 regions, tid=1 → chr2 regions
+        for (chrom, tid) in [("chr1", 0u32), ("chr2", 1u32)] {
+            if let Some(rs) = bed.regions_by_chrom.get(chrom) {
+                regions_by_tid.insert(
+                    tid,
+                    rs.iter()
+                        .map(|r| IndexedRegion {
+                            start: r.start,
+                            end: r.end,
+                            label_idx: r.label_idx,
+                            global_idx: r.global_idx,
+                        })
+                        .collect(),
+                );
+            }
+        }
+        acc.current_index = BedIndex { regions_by_tid };
+
+        let ups0: Vec<i32> = vec![1, 0, 0, 0, -1, 0, 0, 0, 0, 0];
+        let ups1: Vec<i32> = vec![2, 0, 0, 0, -2, 0, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups0);
+        acc.process_contig(1, "g1", &ups1);
+
+        let covs = acc.take_label_coverages("g1");
+        // label_a mean across both regions: (4+8) / 10 = 1.2
+        assert!(
+            (covs[0][0] - 1.2).abs() < 1e-5,
+            "multi-contig mean: expected 1.2, got {}",
+            covs[0][0]
+        );
+    }
+
+    /// Feature 2: region of length 1 bp — no panic, correct value.
+    #[test]
+    fn test_feature2_region_length_1() {
+        // Region [3,4) — single base.  cov at pos 3 = 5 → mean = 5.0
+        let mut acc = make_accumulator_with_estimators(
+            "chr1\t3\t4\tlabel_a\n",
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+        );
+        fake_index_tid0(&mut acc);
+
+        // ups_and_downs: cov = [0,0,0,5,0,0,0,0,0,0]
+        let ups: Vec<i32> = vec![0, 0, 0, 5, -5, 0, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        assert!(
+            (covs[0][0] - 5.0).abs() < 1e-5,
+            "1-bp region mean: expected 5.0, got {}",
+            covs[0][0]
+        );
+    }
+
+    /// Feature 2: genome with no BED regions on any of its contigs returns zeros
+    /// (from the None branch — no entry ever created in genome_label_estimators).
+    #[test]
+    fn test_feature2_genome_no_regions_returns_zeros() {
+        let mut acc = make_accumulator_with_estimators(
+            "chr1\t0\t5\tlabel_a\n",
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+        );
+        // No call to fake_index_tid0 → current_index is empty → process_contig returns early.
+        // We call take_label_coverages for a genome that was never seen.
+        let covs = acc.take_label_coverages("never_seen_genome");
+        assert_eq!(covs.len(), 1, "1 label");
+        assert_eq!(covs[0].len(), 1, "1 method");
+        assert!(
+            covs[0][0].abs() < 1e-5,
+            "fresh estimator should return 0.0, got {}",
+            covs[0][0]
+        );
+        assert!(covs[0][0].is_finite(), "must not be NaN or infinite");
+    }
+
+    /// Feature 2: label with no BED regions on any processed contig returns 0.0
+    /// (entry created for genome via label_a hit, but label_b estimators are fresh).
+    #[test]
+    fn test_feature2_label_no_regions_returns_zero() {
+        // label_a has a region on chr1 (tid=0), label_b only on chr2 (not indexed).
+        let mut acc = make_accumulator_with_estimators(
+            "chr1\t0\t5\tlabel_a\nchr2\t0\t5\tlabel_b\n",
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+        );
+
+        // Only map chr1 to tid=0; chr2 gets no tid → label_b has no indexed regions.
+        let mut regions_by_tid: HashMap<u32, Vec<IndexedRegion>> = HashMap::new();
+        if let Some(rs) = acc.parsed_bed.regions_by_chrom.get("chr1") {
+            regions_by_tid.insert(
+                0,
+                rs.iter()
+                    .map(|r| IndexedRegion {
+                        start: r.start,
+                        end: r.end,
+                        label_idx: r.label_idx,
+                        global_idx: r.global_idx,
+                    })
+                    .collect(),
+            );
+        }
+        acc.current_index = BedIndex { regions_by_tid };
+
+        let ups: Vec<i32> = vec![3, 0, 0, 0, 0, -3, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        // labels sorted alphabetically: label_a=0, label_b=1
+        assert!(
+            (covs[0][0] - 3.0).abs() < 1e-5,
+            "label_a mean: expected 3.0, got {}",
+            covs[0][0]
+        );
+        assert!(
+            covs[1][0].abs() < 1e-5,
+            "label_b (no regions on tid=0): expected 0.0, got {}",
+            covs[1][0]
+        );
+        assert!(covs[1][0].is_finite(), "label_b must not be NaN");
+    }
+
+    /// Feature 2: take_label_coverages resets state — second call returns zeros.
+    #[test]
+    fn test_feature2_take_is_consume() {
+        let mut acc = make_accumulator_with_estimators(
+            "chr1\t0\t5\tlabel_a\n",
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+        );
+        fake_index_tid0(&mut acc);
+
+        let ups: Vec<i32> = vec![1, 0, 0, 0, 0, -1, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs1 = acc.take_label_coverages("g1");
+        assert!((covs1[0][0] - 1.0).abs() < 1e-5, "first call");
+
+        // Second call — entry was removed, should return zeros
+        let covs2 = acc.take_label_coverages("g1");
+        assert!(covs2[0][0].abs() < 1e-5, "second call should be 0.0");
+    }
+
+    /// Gate test for Phase 2 / Feature 2.
+    ///
+    /// Validates the sub_ups reconstruction technique: for a region [s, e), we
+    /// build a synthetic ups_and_downs slice where
+    ///   sub_ups[0] = pcov[s+1] - pcov[s]   (absolute coverage at position s)
+    ///   sub_ups[i] = ups_and_downs[s+i]      for i ≥ 1
+    ///
+    /// Claim: prefix_sum(sub_ups)[j] == coverage[s+j] for all j in 0..len.
+    ///
+    /// If this holds, calling CoverageEstimator::add_contig(&sub_ups, ...) with
+    /// contig_end_exclusion=0 gives the same result as processing the original
+    /// ups_and_downs restricted to [s, e).
+    ///
+    /// The test verifies MeanGenomeCoverageEstimator and
+    /// CoverageFractionGenomeCoverageEstimator across three non-trivial
+    /// sub-regions of an 11-bp contig.
+    #[test]
+    fn test_sub_ups_correctness() {
+        // Contig of 11 bp:
+        //   ups = [2, -1, 0, 0, -1, 0, 3, -3, 0, 1, -1]
+        //   cov  = [2,  1,  1,  1,  0, 0,  3,  0, 0,  1,  0]
+        //   pcov = [0,  2,  3,  4,  5, 5,  5,  8, 8,  8,  9, 9]
+        let ups: Vec<i32> = vec![2, -1, 0, 0, -1, 0, 3, -3, 0, 1, -1];
+        let n = ups.len();
+
+        // Build prefix-coverage array: pcov[i] = sum of coverage[0..i]
+        let mut pcov = vec![0i64; n + 1];
+        let mut running: i64 = 0;
+        for (i, &delta) in ups.iter().enumerate() {
+            running += delta as i64;
+            pcov[i + 1] = pcov[i] + running;
+        }
+        assert_eq!(
+            pcov,
+            vec![0, 2, 3, 4, 5, 5, 5, 8, 8, 8, 9, 9],
+            "pcov sanity check"
+        );
+
+        // Helper: build sub_ups for region [s, e)
+        let build_sub_ups = |s: usize, e: usize| -> Vec<i32> {
+            let len = e - s;
+            let mut v = vec![0i32; len];
+            v[0] = (pcov[s + 1] - pcov[s]) as i32; // absolute cov at position s
+            for i in 1..len {
+                v[i] = ups[s + i];
+            }
+            v
+        };
+
+        // -------------------------------------------------------------------
+        // Region [0, 5): cov = [2,1,1,1,0], sum=5, mean=1.0, covered=4/5=0.8
+        // -------------------------------------------------------------------
+        let sub05 = build_sub_ups(0, 5);
+        assert_eq!(sub05, vec![2, -1, 0, 0, -1], "sub_ups [0,5)");
+
+        let mut est = CoverageEstimator::new_estimator_mean(0.0, 0, false);
+        est.add_contig(&sub05, 0, 0, 0.0);
+        let mean = est.calculate_coverage(&[]);
+        assert!(
+            (mean - 1.0).abs() < 1e-6,
+            "Mean [0,5): expected 1.0, got {}",
+            mean
+        );
+
+        let mut est = CoverageEstimator::new_estimator_covered_fraction(0.0);
+        est.add_contig(&sub05, 0, 0, 0.0);
+        let frac = est.calculate_coverage(&[]);
+        assert!(
+            (frac - 0.8).abs() < 1e-6,
+            "CovFrac [0,5): expected 0.8, got {}",
+            frac
+        );
+
+        // -------------------------------------------------------------------
+        // Region [4, 8): cov = [0,0,3,0], sum=3, mean=0.75, covered=1/4=0.25
+        // -------------------------------------------------------------------
+        let sub48 = build_sub_ups(4, 8);
+        assert_eq!(sub48, vec![0, 0, 3, -3], "sub_ups [4,8)");
+
+        let mut est = CoverageEstimator::new_estimator_mean(0.0, 0, false);
+        est.add_contig(&sub48, 0, 0, 0.0);
+        let mean = est.calculate_coverage(&[]);
+        assert!(
+            (mean - 0.75).abs() < 1e-6,
+            "Mean [4,8): expected 0.75, got {}",
+            mean
+        );
+
+        let mut est = CoverageEstimator::new_estimator_covered_fraction(0.0);
+        est.add_contig(&sub48, 0, 0, 0.0);
+        let frac = est.calculate_coverage(&[]);
+        assert!(
+            (frac - 0.25).abs() < 1e-6,
+            "CovFrac [4,8): expected 0.25, got {}",
+            frac
+        );
+
+        // -------------------------------------------------------------------
+        // Region [6, 11): cov = [3,0,0,1,0], sum=4, mean=0.8, covered=2/5=0.4
+        // -------------------------------------------------------------------
+        let sub611 = build_sub_ups(6, 11);
+        assert_eq!(sub611, vec![3, -3, 0, 1, -1], "sub_ups [6,11)");
+
+        let mut est = CoverageEstimator::new_estimator_mean(0.0, 0, false);
+        est.add_contig(&sub611, 0, 0, 0.0);
+        let mean = est.calculate_coverage(&[]);
+        assert!(
+            (mean - 0.8).abs() < 1e-6,
+            "Mean [6,11): expected 0.8, got {}",
+            mean
+        );
+
+        let mut est = CoverageEstimator::new_estimator_covered_fraction(0.0);
+        est.add_contig(&sub611, 0, 0, 0.0);
+        let frac = est.calculate_coverage(&[]);
+        assert!(
+            (frac - 0.4).abs() < 1e-6,
+            "CovFrac [6,11): expected 0.4, got {}",
+            frac
+        );
     }
 }

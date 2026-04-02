@@ -162,7 +162,11 @@ pub fn mosdepth_genome_coverage_with_contig_names<
                                 );
                             }
                             if let Some(ref mut acc) = bed_acc {
-                                acc.process_contig(last_tid, &ups_and_downs);
+                                acc.process_contig(
+                                    last_tid,
+                                    &contigs_and_genomes.genomes[genome_index],
+                                    &ups_and_downs,
+                                );
                             }
                         }
                     }
@@ -259,7 +263,11 @@ pub fn mosdepth_genome_coverage_with_contig_names<
                     )
                 }
                 if let Some(ref mut acc) = bed_acc {
-                    acc.process_contig(last_tid, &ups_and_downs);
+                    acc.process_contig(
+                        last_tid,
+                        &contigs_and_genomes.genomes[genome_index],
+                        &ups_and_downs,
+                    );
                 }
             }
 
@@ -311,6 +319,15 @@ pub fn mosdepth_genome_coverage_with_contig_names<
                                     .map(|tid| header.target_len(*tid).unwrap())
                                     .sum(),
                             );
+                        }
+                    }
+                    // Feature 2 — append per-label coverage columns
+                    if let Some(ref mut acc) = bed_acc {
+                        let label_covs = acc.take_label_coverages(genome);
+                        for per_label in &label_covs {
+                            for &c in per_label {
+                                coverage_taker.add_single_coverage(c);
+                            }
                         }
                     }
                     coverage_taker.finish_entry();
@@ -365,6 +382,7 @@ fn print_last_genomes<T: CoverageTaker>(
     split_char: u8,
     header: &rust_htslib::bam::HeaderView,
     tid_to_print_zeros_to: u32,
+    mut bed_acc: Option<&mut BedcovAccumulator>,
 ) -> bool {
     //    debug!("ups_and_downs {:?}", &ups_and_downs);
     for coverage_estimator in coverage_estimators.iter_mut() {
@@ -413,6 +431,16 @@ fn print_last_genomes<T: CoverageTaker>(
                     );
                 }
             }
+            // Feature 2 — append per-label coverage columns
+            if let Some(ref mut acc) = bed_acc {
+                let gname = str::from_utf8(last_genome_name).unwrap();
+                let label_covs = acc.take_label_coverages(gname);
+                for per_label in &label_covs {
+                    for &c in per_label {
+                        coverage_taker.add_single_coverage(c);
+                    }
+                }
+            }
             coverage_taker.finish_entry();
         }
     }
@@ -430,6 +458,7 @@ fn print_last_genomes<T: CoverageTaker>(
             split_char,
             coverage_taker,
             header,
+            bed_acc,
         );
     }
     positive_coverage
@@ -603,6 +632,7 @@ pub fn mosdepth_genome_coverage<
                                 split_char,
                                 coverage_taker,
                                 &header,
+                                bed_acc.as_deref_mut(),
                             );
                         }
                     } else if current_genome == last_genome.unwrap() {
@@ -619,7 +649,11 @@ pub fn mosdepth_genome_coverage<
                             );
                         }
                         if let Some(ref mut acc) = bed_acc {
-                            acc.process_contig(last_tid, &ups_and_downs);
+                            acc.process_contig(
+                                last_tid,
+                                str::from_utf8(last_genome.unwrap()).unwrap(),
+                                &ups_and_downs,
+                            );
                         }
                         // Collect the length of reference sequences from this
                         // genome that had no hits that were just skipped over.
@@ -651,7 +685,11 @@ pub fn mosdepth_genome_coverage<
                             ));
 
                         if let Some(ref mut acc) = bed_acc {
-                            acc.process_contig(last_tid, &ups_and_downs);
+                            acc.process_contig(
+                                last_tid,
+                                str::from_utf8(last_genome.unwrap()).unwrap(),
+                                &ups_and_downs,
+                            );
                         }
                         let positive_coverage = print_last_genomes(
                             num_mapped_reads_in_current_contig,
@@ -670,6 +708,7 @@ pub fn mosdepth_genome_coverage<
                             split_char,
                             &header,
                             tid,
+                            bed_acc.as_deref_mut(),
                         );
                         if positive_coverage {
                             num_mapped_reads_total += num_mapped_reads_in_current_genome;
@@ -788,7 +827,11 @@ pub fn mosdepth_genome_coverage<
                 .append(&mut fill_genome_length_forwards(last_tid, last_genome));
 
             if let Some(ref mut acc) = bed_acc {
-                acc.process_contig(last_tid, &ups_and_downs);
+                acc.process_contig(
+                    last_tid,
+                    str::from_utf8(last_genome.unwrap()).unwrap(),
+                    &ups_and_downs,
+                );
             }
             let positive_coverage = print_last_genomes(
                 num_mapped_reads_in_current_contig,
@@ -807,6 +850,7 @@ pub fn mosdepth_genome_coverage<
                 split_char,
                 &header,
                 header.target_count() - 1,
+                bed_acc.as_deref_mut(),
             );
             if positive_coverage {
                 num_mapped_reads_total += num_mapped_reads_in_current_genome;
@@ -905,6 +949,7 @@ fn print_previous_zero_coverage_genomes2<'a, T: CoverageTaker>(
     split_char: u8,
     coverage_taker: &mut T,
     header: &bam::HeaderView,
+    mut bed_acc: Option<&mut BedcovAccumulator>,
 ) -> &'a Vec<CoverageEstimator> {
     let mut my_current_genome = current_genome;
     let mut tid = current_tid;
@@ -962,6 +1007,16 @@ fn print_previous_zero_coverage_genomes2<'a, T: CoverageTaker>(
         );
         for coverage_estimator in pileup_coverage_estimators {
             coverage_estimator.print_zero_coverage(coverage_taker, genomes_unobserved_length[i]);
+        }
+        // Feature 2 — zero-coverage genomes also need label columns
+        if let Some(ref mut acc) = bed_acc {
+            let gname = str::from_utf8(genomes_to_print[i]).unwrap();
+            let label_covs = acc.take_label_coverages(gname);
+            for per_label in &label_covs {
+                for &c in per_label {
+                    coverage_taker.add_single_coverage(c);
+                }
+            }
         }
         coverage_taker.finish_entry();
     }
@@ -1792,6 +1847,7 @@ mod tests {
             b'~',
             &mut coverage_taker,
             bam.header(),
+            None,
         );
         match coverage_taker {
             CoverageTakerType::CachedSingleFloatCoverageTaker {
@@ -1821,6 +1877,7 @@ mod tests {
             b'~',
             &mut coverage_taker,
             bam.header(),
+            None,
         );
         match coverage_taker {
             CoverageTakerType::CachedSingleFloatCoverageTaker {

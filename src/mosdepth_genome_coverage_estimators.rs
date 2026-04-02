@@ -820,9 +820,12 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
                 observed_contig_length,
                 num_mapped_reads,
             } => {
-                *num_mapped_reads as f32
-                    / (*observed_contig_length + unobserved_contig_lengths.iter().sum::<u64>())
-                        as f32
+                let total = *observed_contig_length + unobserved_contig_lengths.iter().sum::<u64>();
+                if total == 0 {
+                    0.0
+                } else {
+                    *num_mapped_reads as f32 / total as f32
+                }
             }
             CoverageEstimator::AverageIdentityEstimator {
                 sum_identity,
