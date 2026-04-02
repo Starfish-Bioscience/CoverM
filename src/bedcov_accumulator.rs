@@ -3,6 +3,8 @@ use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+use memmap2::Mmap;
+
 use rayon::prelude::*;
 
 use flate2::write::GzEncoder;
@@ -54,8 +56,12 @@ pub struct ParsedBed {
 
 impl ParsedBed {
     pub fn from_file(path: &str, unlabeled_label: Option<&str>, need_bedgraph: bool) -> ParsedBed {
-        let text = fs::read_to_string(path)
+        let file = fs::File::open(path)
             .unwrap_or_else(|e| panic!("Cannot open --regions-bed file '{}': {}", path, e));
+        let mmap = unsafe { Mmap::map(&file) }
+            .unwrap_or_else(|e| panic!("Cannot mmap --regions-bed file '{}': {}", path, e));
+        let text = std::str::from_utf8(&mmap)
+            .unwrap_or_else(|e| panic!("--regions-bed file '{}' is not valid UTF-8: {}", path, e));
 
         // --- first pass: collect raw records (parallel parse) ---
         struct RawRecord {

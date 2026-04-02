@@ -9,9 +9,10 @@ set -e
 # Requires: cargo build --release to be run first
 #
 # Usage:
-#   ./build-container.sh                          # Build → container/
+#   ./build-container.sh                          # Build → container/ (skip if SIF exists)
 #   ./build-container.sh --install                # Build → /HDD/singularity_apptainer/
 #   ./build-container.sh --install --push         # Build, install, and push to GHCR
+#   ./build-container.sh --force                  # Rebuild even if SIF already exists
 #   ./build-container.sh --dry-run [--install] [--push]  # Show what would happen, no build/push
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +37,7 @@ GHCR_REGISTRY="ghcr.io/${GHCR_OWNER}/${GHCR_IMAGE}"
 PUSH_TO_GHCR=false
 INSTALL=false
 DRY_RUN=false
+FORCE=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --push)
@@ -50,9 +52,13 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --force)
+            FORCE=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--install] [--push] [--dry-run]"
+            echo "Usage: $0 [--install] [--push] [--dry-run] [--force]"
             exit 1
             ;;
     esac
@@ -70,6 +76,11 @@ if [ "$DRY_RUN" = true ]; then
     echo "=== Dry run — nothing will be built or pushed ==="
     echo "  Version   : $VERSION"
     echo "  SIF file  : $SIF_FILE"
+    if [ -f "$SIF_FILE" ] && [ "$FORCE" = false ]; then
+        echo "  Build     : skip (SIF exists — use --force to rebuild)"
+    else
+        echo "  Build     : will build"
+    fi
     if [ "$PUSH_TO_GHCR" = true ]; then
         echo "  GHCR push : oras://${GHCR_REGISTRY}:${VERSION}"
         echo "              oras://${GHCR_REGISTRY}:latest"
@@ -79,7 +90,13 @@ if [ "$DRY_RUN" = true ]; then
     exit 0
 fi
 
-echo "=== Building CoverM $VERSION Apptainer container ==="
+# Skip build if SIF already exists (unless --force)
+if [ -f "$SIF_FILE" ] && [ "$FORCE" = false ]; then
+    echo "=== SIF already exists, skipping build ==="
+    echo "  $SIF_FILE"
+    echo "  (use --force to rebuild)"
+else
+    echo "=== Building CoverM $VERSION Apptainer container ==="
 
 # Check if binary exists
 if [ ! -f "$REPO_DIR/target/release/coverm" ]; then
@@ -117,6 +134,7 @@ echo "Apptainer image: $SIF_FILE"
 echo ""
 echo "Test the container with:"
 echo "  apptainer exec $SIF_FILE coverm --version"
+fi  # end build block
 
 # Push to GHCR if requested
 if [ "$PUSH_TO_GHCR" = true ]; then

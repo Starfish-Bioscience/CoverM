@@ -34,6 +34,7 @@ extern crate serde;
 extern crate clap;
 extern crate clap_complete;
 extern crate flate2;
+extern crate memmap2;
 extern crate rayon;
 #[macro_use]
 extern crate lazy_static;
