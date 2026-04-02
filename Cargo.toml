@@ -38,9 +38,11 @@ bird_tool_utils-man = "0.4.0"
 roff = "0.2.*"
 needletail = "0.5.*"
 csv = "1.*"
+flate2 = "1.*"
 
 [dev-dependencies]
 assert_cli = "0.6.*"
+flate2 = "1.*"
 # Run things before commit but not push
 cargo-husky = { version="1", default-features = false, features=["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
 

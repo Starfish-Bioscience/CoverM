@@ -1,4 +1,5 @@
 pub mod bam_generator;
+pub mod bedcov_accumulator;
 pub mod cli;
 pub mod contig;
 pub mod coverage_printer;
@@ -32,6 +33,7 @@ extern crate tempfile;
 extern crate serde;
 extern crate clap;
 extern crate clap_complete;
+extern crate flate2;
 #[macro_use]
 extern crate lazy_static;
 extern crate bird_tool_utils;
