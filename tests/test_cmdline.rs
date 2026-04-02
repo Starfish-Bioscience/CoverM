@@ -4298,6 +4298,38 @@ genome6~random_sequence_length_11003	0	0	0
             .contains("Mean high\t2seqs.reads_for_seq1 Mean low\n")
             .unwrap();
     }
+
+    /// Regression: --methods relative_abundance mean --regions-bed must NOT
+    /// produce duplicate "Mean <label>" columns.  relative_abundance uses a
+    /// MeanGenomeCoverageEstimator internally; it must be excluded from the
+    /// per-label template list so it doesn't double up with the explicit mean.
+    ///
+    /// With mean only (1 real method) and 2 labels (high, low), the label
+    /// block is 2 columns: "Mean high", "Mean low" — not 4.
+    #[test]
+    fn test_bedcov_no_duplicate_columns_with_relative_abundance() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "relative_abundance",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+            ])
+            .succeeds()
+            // "Mean high" must appear exactly once: preceded by "Relative Abundance (%)"
+            // and "Mean" columns, then "Mean low" — no second "Mean high" duplicate.
+            .stdout()
+            .contains(
+                "Relative Abundance (%)\t2seqs.reads_for_seq1 Mean\t2seqs.reads_for_seq1 Mean high\t2seqs.reads_for_seq1 Mean low\n",
+            )
+            .unwrap();
+    }
 }
 
 // TODO: Add mismatching bases test

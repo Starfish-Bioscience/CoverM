@@ -179,17 +179,29 @@ impl ParsedBed {
             v.sort_unstable_by_key(|r| r.start);
         }
 
-        // warn on overlapping regions within the same chrom
-        for (chrom, v) in &regions_by_chrom {
+        // Count overlapping region pairs; emit a single summary warn instead of
+        // one message per pair (large BED files can produce millions of pairs).
+        let mut overlap_contigs: usize = 0;
+        let mut overlap_pairs: usize = 0;
+        for v in regions_by_chrom.values() {
+            let mut contig_had_overlap = false;
             for w in v.windows(2) {
                 if w[1].start < w[0].end {
-                    warn!(
-                        "Overlapping BED regions detected on contig '{}' \
-                         ([{},{}] and [{},{}]); each region is counted independently",
-                        chrom, w[0].start, w[0].end, w[1].start, w[1].end
-                    );
+                    overlap_pairs += 1;
+                    if !contig_had_overlap {
+                        overlap_contigs += 1;
+                        contig_had_overlap = true;
+                    }
                 }
             }
+        }
+        if overlap_pairs > 0 {
+            warn!(
+                "Overlapping BED regions detected: {} overlapping pair(s) across {} contig(s); \
+                 each region is counted independently for its own label, \
+                 and their union is used for the unlabeled complement",
+                overlap_pairs, overlap_contigs
+            );
         }
 
         info!(

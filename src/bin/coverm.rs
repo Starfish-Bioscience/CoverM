@@ -88,9 +88,19 @@ fn main() {
                     });
                     bedcov_output_dir = Some(dir);
                 }
-                let label_methods = coverm::bedcov_accumulator::make_label_estimators(
-                    &estimators_and_taker.estimators,
-                );
+                // Filter out relative_abundance estimators (columns_to_normalise)
+                // before building per-label templates: relative_abundance is a
+                // genome-level normalisation and must not produce a duplicate
+                // "Mean <label>" column alongside the regular "mean" method.
+                let label_estimator_templates: Vec<_> = estimators_and_taker
+                    .estimators
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !estimators_and_taker.columns_to_normalise.contains(i))
+                    .map(|(_, e)| e.clone())
+                    .collect();
+                let label_methods =
+                    coverm::bedcov_accumulator::make_label_estimators(&label_estimator_templates);
                 estimators_and_taker.extend_label_columns(&parsed_bed.labels, &label_methods);
                 bed_acc = Some(coverm::bedcov_accumulator::BedcovAccumulator::new(
                     parsed_bed,
