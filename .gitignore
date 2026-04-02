@@ -10,3 +10,14 @@ vscode.*
 issue38
 issue60
 .pixi
+
+# Container artifacts
+*.sif
+
+# Build artifacts
+/coverm
+
+# Claude Code
+.claude/
+
+mag_detection/
