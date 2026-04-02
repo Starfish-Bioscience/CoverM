@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
+
+use rayon::prelude::*;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -52,76 +54,81 @@ pub struct ParsedBed {
 
 impl ParsedBed {
     pub fn from_file(path: &str, unlabeled_label: Option<&str>, need_bedgraph: bool) -> ParsedBed {
-        let file = fs::File::open(path)
+        let text = fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("Cannot open --regions-bed file '{}': {}", path, e));
-        let reader = BufReader::new(file);
 
-        // --- first pass: collect raw records ---
+        // --- first pass: collect raw records (parallel parse) ---
         struct RawRecord {
             chrom: String,
             start: u32,
             end: u32,
             label: String,
         }
-        let mut raw: Vec<RawRecord> = Vec::new();
-        let mut label_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-        for (lineno, line_res) in reader.lines().enumerate() {
-            let line = line_res.unwrap_or_else(|e| {
-                panic!(
-                    "Error reading --regions-bed '{}' line {}: {}",
-                    path,
-                    lineno + 1,
-                    e
-                )
-            });
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let cols: Vec<&str> = line.splitn(5, '\t').collect();
-            if cols.len() < 4 {
-                panic!(
-                    "--regions-bed '{}' line {}: expected at least 4 tab-separated columns, got {}",
-                    path,
-                    lineno + 1,
-                    cols.len()
-                );
-            }
-            let chrom = cols[0].to_string();
-            let start: u32 = cols[1].parse().unwrap_or_else(|_| {
-                panic!(
-                    "--regions-bed '{}' line {}: cannot parse start '{}'",
-                    path,
-                    lineno + 1,
-                    cols[1]
-                )
-            });
-            let end: u32 = cols[2].parse().unwrap_or_else(|_| {
-                panic!(
-                    "--regions-bed '{}' line {}: cannot parse end '{}'",
-                    path,
-                    lineno + 1,
-                    cols[2]
-                )
-            });
-            if end <= start {
-                panic!(
-                    "--regions-bed '{}' line {}: end ({}) must be > start ({})",
-                    path,
-                    lineno + 1,
+        // Collect non-empty, non-comment lines with their original 1-based line numbers.
+        let data_lines: Vec<(usize, &str)> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with('#')
+            })
+            .collect();
+
+        // Parse each line in parallel; panics propagate via unwrap on the join.
+        let raw: Vec<RawRecord> = data_lines
+            .into_par_iter()
+            .map(|(lineno, line)| {
+                let line = line.trim();
+                let cols: Vec<&str> = line.splitn(5, '\t').collect();
+                if cols.len() < 4 {
+                    panic!(
+                        "--regions-bed '{}' line {}: expected at least 4 tab-separated columns, got {}",
+                        path,
+                        lineno + 1,
+                        cols.len()
+                    );
+                }
+                let chrom = cols[0].to_string();
+                let start: u32 = cols[1].parse().unwrap_or_else(|_| {
+                    panic!(
+                        "--regions-bed '{}' line {}: cannot parse start '{}'",
+                        path,
+                        lineno + 1,
+                        cols[1]
+                    )
+                });
+                let end: u32 = cols[2].parse().unwrap_or_else(|_| {
+                    panic!(
+                        "--regions-bed '{}' line {}: cannot parse end '{}'",
+                        path,
+                        lineno + 1,
+                        cols[2]
+                    )
+                });
+                if end <= start {
+                    panic!(
+                        "--regions-bed '{}' line {}: end ({}) must be > start ({})",
+                        path,
+                        lineno + 1,
+                        end,
+                        start
+                    );
+                }
+                let label = cols[3].to_string();
+                RawRecord {
+                    chrom,
+                    start,
                     end,
-                    start
-                );
-            }
-            let label = cols[3].to_string();
-            label_set.insert(label.clone());
-            raw.push(RawRecord {
-                chrom,
-                start,
-                end,
-                label,
-            });
+                    label,
+                }
+            })
+            .collect();
+
+        // Rebuild label_set from the parsed records (sequential, cheap).
+        let mut label_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for r in &raw {
+            label_set.insert(r.label.clone());
         }
 
         // --- build label index (alphabetical) ---
