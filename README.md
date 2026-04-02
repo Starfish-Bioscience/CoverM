@@ -220,6 +220,30 @@ The output from the full sample can be found [here](https://github.com/wwood/Cov
 There is an additional row named `unmapped` which represents the metrics for the reads that did not map to any of the provided genomes.
 This is only applicable to the relative abundance metric (among those we selected), and we can see that 51% of the reads were unmapped.
 
+## BED region coverage
+
+The `genome` subcommand supports per-region coverage statistics using a
+4-column BED file (`chrom start end label`):
+
+```bash
+coverm genome \
+  -b aligned.bam \
+  --genome-fasta-directory genomes/ \
+  -m mean covered_fraction \
+  --regions-bed regions.bed \
+  --output-bedcov bedgraph_output/
+```
+
+- `--regions-bed <FILE>`: compute coverage for each BED region, grouped by
+  label. Appends one extra column per `(label, method)` pair to the main
+  output table.
+- `--output-bedcov <DIR>`: write one multi-track bedGraph file per sample
+  (one `track type=bedGraph` per label, mean coverage as value).
+  Compatible with IGV, trackViewer (R/Bioconductor), and pyGenomeTracks.
+- `--output-bedcov-compress`: gzip-compress the bedGraph files (`.bedgraph.gz`).
+
+Note: `--regions-bed` is incompatible with `--contig-end-exclusion`.
+
 ## Calculation methods
 
 The `-m/--methods` flag specifies the specific kind(s) of coverage that are

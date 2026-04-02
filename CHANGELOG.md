@@ -5,17 +5,21 @@ All notable changes to CoverM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] - 2026-04-02
 
 ### Added
 
-#### BED region coverage (`genome` subcommand) — `feature/bedcov-labels`
+#### BED region coverage (`genome` subcommand)
+
 - `--regions-bed <FILE>`: load a 4-column BED file (`chrom start end label`) to
-  compute per-region coverage statistics grouped by label
+  compute per-region coverage statistics grouped by label.
+  Appends `NB_LABELS × NB_METHODS` extra columns to the main output table,
+  one per (label, method) combination, using the same `--methods` as the
+  genome-level output.
 - `--output-bedcov <DIR>`: write one multi-track bedGraph file per sample into
   DIR (`{DIR}/{sample_id}.bedgraph`). Each file contains one
-  `track type=bedGraph` per label (alphabetical order), with `mean_cov` as the
-  data value. Compatible with IGV, trackViewer (R/Bioconductor), and
+  `track type=bedGraph` per label (alphabetical order), with mean coverage as
+  the data value. Compatible with IGV, trackViewer (R/Bioconductor), and
   pyGenomeTracks. Note: `rtracklayer::import.bedGraph()` does not support
   multi-track files — use trackViewer instead.
 - `--output-bedcov-compress`: gzip-compress bedGraph output files
@@ -24,7 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `--contig-end-exclusion` is now incompatible with `--regions-bed` in the
-  `genome` subcommand (runtime error if both are provided explicitly)
+  `genome` subcommand (runtime error if both are provided explicitly).
+
+### Fixed
+
+- `ReadsPerBaseCalculator`: returns `0.0` instead of `NaN` when called on a
+  zero-length genome (previously caused a 0/0 division).
 
 ---
 

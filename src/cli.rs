@@ -1474,9 +1474,10 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                         .long("regions-bed")
                         .help(
                             "BED file (4 columns: chrom start end label). \
-                             Enables per-region bedGraph output (--output-bedcov) \
-                             and will add NB_LABELS×NB_METHODS extra columns to the \
-                             main output in a future release. \
+                             Computes per-region coverage statistics grouped by label. \
+                             Appends one column per (label × method) pair to the main \
+                             output table, and enables bedGraph output via \
+                             --output-bedcov. \
                              Incompatible with --contig-end-exclusion.",
                         )
                         .value_name("FILE"),
