@@ -2,6 +2,7 @@ use nm;
 use rust_htslib::bam;
 use rust_htslib::bam::record::Cigar;
 use std;
+use std::path::Path;
 use std::process;
 use FlagFilter;
 
@@ -9,11 +10,13 @@ use std::collections::BTreeSet;
 use std::str;
 
 use bam_generator::*;
+use bedcov_accumulator::BedcovAccumulator;
 use coverage_takers::*;
 use genomes_and_contigs::GenomesAndContigs;
 use mosdepth_genome_coverage_estimators::*;
 use ReadsMapped;
 
+#[allow(clippy::too_many_arguments)]
 pub fn mosdepth_genome_coverage_with_contig_names<
     R: NamedBamReader,
     G: NamedBamReaderGenerator<R>,
@@ -26,6 +29,9 @@ pub fn mosdepth_genome_coverage_with_contig_names<
     flag_filters: &FlagFilter,
     coverage_estimators: &mut [CoverageEstimator],
     threads: u16,
+    mut bed_acc: Option<&mut BedcovAccumulator>,
+    bedcov_dir: Option<&Path>,
+    bedcov_compress: bool,
 ) -> Vec<ReadsMapped> {
     let mut reads_mapped_vector = vec![];
     let mut is_first_bam = true;
@@ -38,6 +44,10 @@ pub fn mosdepth_genome_coverage_with_contig_names<
         coverage_taker.start_stoit(stoit_name);
         let header = bam_generated.header().clone();
         let target_names = header.target_names();
+
+        if let Some(ref mut acc) = bed_acc {
+            acc.reinit_for_bam(&header);
+        }
 
         // Collect reference numbers for each genome's contigs
         let mut reference_number_to_genome_index: Vec<Option<usize>> = vec![];
@@ -151,6 +161,9 @@ pub fn mosdepth_genome_coverage_with_contig_names<
                                     sum_identity_in_current_contig,
                                 );
                             }
+                            if let Some(ref mut acc) = bed_acc {
+                                acc.process_contig(last_tid, &ups_and_downs);
+                            }
                         }
                     }
 
@@ -245,6 +258,9 @@ pub fn mosdepth_genome_coverage_with_contig_names<
                         sum_identity_in_current_contig,
                     )
                 }
+                if let Some(ref mut acc) = bed_acc {
+                    acc.process_contig(last_tid, &ups_and_downs);
+                }
             }
 
             // Print the coverages of each genome
@@ -315,6 +331,10 @@ pub fn mosdepth_genome_coverage_with_contig_names<
             (reads_mapped.num_mapped_reads * 100) as f64 / reads_mapped.num_reads as f64
         );
         reads_mapped_vector.push(reads_mapped);
+
+        if let (Some(ref acc), Some(dir)) = (&bed_acc, bedcov_dir) {
+            acc.finalise_bedcov(stoit_name, dir, bedcov_compress);
+        }
 
         bam_generated.finish();
     }
@@ -429,6 +449,9 @@ pub fn mosdepth_genome_coverage<
     flag_filters: &FlagFilter,
     single_genome: bool,
     threads: u16,
+    mut bed_acc: Option<&mut BedcovAccumulator>,
+    bedcov_dir: Option<&Path>,
+    bedcov_compress: bool,
 ) -> Vec<ReadsMapped> {
     let mut reads_mapped_vector = vec![];
     debug!(
@@ -444,6 +467,10 @@ pub fn mosdepth_genome_coverage<
         coverage_taker.start_stoit(stoit_name);
         let header = bam_generated.header().clone();
         let target_names = header.target_names();
+
+        if let Some(ref mut acc) = bed_acc {
+            acc.reinit_for_bam(&header);
+        }
 
         let fill_genome_length_forwards = |current_tid, target_genome: Option<&[u8]>| -> Vec<u64> {
             // Iterating reads skips over contigs with no mapped reads, but the
@@ -591,6 +618,9 @@ pub fn mosdepth_genome_coverage<
                                 sum_identity_in_current_contig,
                             );
                         }
+                        if let Some(ref mut acc) = bed_acc {
+                            acc.process_contig(last_tid, &ups_and_downs);
+                        }
                         // Collect the length of reference sequences from this
                         // genome that had no hits that were just skipped over.
                         debug!("Filling unobserved from {last_tid} to {tid}");
@@ -620,6 +650,9 @@ pub fn mosdepth_genome_coverage<
                                 last_genome.unwrap(),
                             ));
 
+                        if let Some(ref mut acc) = bed_acc {
+                            acc.process_contig(last_tid, &ups_and_downs);
+                        }
                         let positive_coverage = print_last_genomes(
                             num_mapped_reads_in_current_contig,
                             last_genome,
@@ -754,6 +787,9 @@ pub fn mosdepth_genome_coverage<
                 .unobserved_contig_lengths
                 .append(&mut fill_genome_length_forwards(last_tid, last_genome));
 
+            if let Some(ref mut acc) = bed_acc {
+                acc.process_contig(last_tid, &ups_and_downs);
+            }
             let positive_coverage = print_last_genomes(
                 num_mapped_reads_in_current_contig,
                 last_genome,
@@ -790,6 +826,10 @@ pub fn mosdepth_genome_coverage<
             (reads_mapped.num_mapped_reads * 100) as f64 / reads_mapped.num_reads as f64
         );
         reads_mapped_vector.push(reads_mapped);
+
+        if let (Some(ref acc), Some(dir)) = (&bed_acc, bedcov_dir) {
+            acc.finalise_bedcov(stoit_name, dir, bedcov_compress);
+        }
 
         bam_generated.finish();
     }
@@ -968,6 +1008,9 @@ mod tests {
                 &flags,
                 single_genome,
                 1,
+                None,
+                None,
+                false,
             );
         }
         assert_eq!(expected, std::fs::read_to_string(tf.path()).unwrap());
@@ -1007,6 +1050,9 @@ mod tests {
                 &flags,
                 single_genome,
                 1,
+                None,
+                None,
+                false,
             );
         }
         assert_eq!(expected, std::fs::read_to_string(tf.path()).unwrap());
@@ -1042,6 +1088,9 @@ mod tests {
                 &flags,
                 coverage_estimators,
                 1,
+                None,
+                None,
+                false,
             );
         }
         assert_eq!(expected, std::fs::read_to_string(tf.path()).unwrap());
@@ -1079,6 +1128,9 @@ mod tests {
                 &flags,
                 coverage_estimators,
                 1,
+                None,
+                None,
+                false,
             );
         }
         assert_eq!(expected, std::fs::read_to_string(tf.path()).unwrap());

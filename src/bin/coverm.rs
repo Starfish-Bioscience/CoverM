@@ -64,6 +64,31 @@ fn main() {
 
             let mut estimators_and_taker =
                 EstimatorsAndTaker::generate_from_clap(m, print_stream.clone());
+
+            // --- BED coverage setup (Feature 1: --output-bedcov) ---
+            let mut bed_acc: Option<coverm::bedcov_accumulator::BedcovAccumulator> = None;
+            let mut bedcov_output_dir: Option<std::path::PathBuf> = None;
+            let bedcov_compress = m.get_flag("output-bedcov-compress");
+            if let Some(bed_path) = m.get_one::<String>("regions-bed") {
+                let parsed_bed =
+                    coverm::bedcov_accumulator::ParsedBed::from_file(bed_path.as_str());
+                if let Some(dir_str) = m.get_one::<String>("output-bedcov") {
+                    let dir = std::path::PathBuf::from(dir_str);
+                    std::fs::create_dir_all(&dir).unwrap_or_else(|e| {
+                        panic!(
+                            "Cannot create --output-bedcov directory '{}': {}",
+                            dir.display(),
+                            e
+                        )
+                    });
+                    bedcov_output_dir = Some(dir);
+                }
+                bed_acc = Some(coverm::bedcov_accumulator::BedcovAccumulator::new(
+                    parsed_bed,
+                ));
+            }
+            // --- end BED setup ---
+
             estimators_and_taker =
                 estimators_and_taker.print_headers("Genome", print_stream.clone());
             let filter_params = FilterParameters::generate_from_clap(m);
@@ -177,6 +202,9 @@ fn main() {
                         separator,
                         &genomes_and_contigs_option,
                         &mut print_stream,
+                        bed_acc.as_mut(),
+                        bedcov_output_dir.as_deref(),
+                        bedcov_compress,
                     );
                 } else if m.get_flag("sharded") {
                     external_command_checker::check_for_samtools();
@@ -194,7 +222,11 @@ fn main() {
                                 &mut estimators_and_taker,
                                 separator,
                                 &genomes_and_contigs_option,
-                                &mut print_stream,);
+                                &mut print_stream,
+                                bed_acc.as_mut(),
+                                bedcov_output_dir.as_deref(),
+                                bedcov_compress,
+                            );
                         }
                         GenomeExclusionTypes::Separator => {
                             run_genome(
@@ -206,7 +238,11 @@ fn main() {
                                 &mut estimators_and_taker,
                                 separator,
                                 &genomes_and_contigs_option,
-                                &mut print_stream,);
+                                &mut print_stream,
+                                bed_acc.as_mut(),
+                                bedcov_output_dir.as_deref(),
+                                bedcov_compress,
+                            );
                         }
                         GenomeExclusionTypes::GenomesAndContigs => {
                             run_genome(
@@ -218,7 +254,11 @@ fn main() {
                                 &mut estimators_and_taker,
                                 separator,
                                 &genomes_and_contigs_option,
-                                &mut print_stream,);
+                                &mut print_stream,
+                                bed_acc.as_mut(),
+                                bedcov_output_dir.as_deref(),
+                                bedcov_compress,
+                            );
                         }
                     }
                 } else {
@@ -229,6 +269,9 @@ fn main() {
                         separator,
                         &genomes_and_contigs_option,
                         &mut print_stream,
+                        bed_acc.as_mut(),
+                        bedcov_output_dir.as_deref(),
+                        bedcov_compress,
                     );
                 }
             } else {
@@ -362,6 +405,9 @@ fn main() {
                         separator,
                         &genomes_and_contigs_option,
                         &mut print_stream,
+                        bed_acc.as_mut(),
+                        bedcov_output_dir.as_deref(),
+                        bedcov_compress,
                     );
                 } else if m.get_flag("sharded") {
                     match genome_exclusion_type {
@@ -378,6 +424,9 @@ fn main() {
                                 separator,
                                 &genomes_and_contigs_option,
                                 &mut print_stream,
+                                bed_acc.as_mut(),
+                                bedcov_output_dir.as_deref(),
+                                bedcov_compress,
                             );
                         }
                         GenomeExclusionTypes::Separator => {
@@ -393,6 +442,9 @@ fn main() {
                                 separator,
                                 &genomes_and_contigs_option,
                                 &mut print_stream,
+                                bed_acc.as_mut(),
+                                bedcov_output_dir.as_deref(),
+                                bedcov_compress,
                             );
                         }
                         GenomeExclusionTypes::GenomesAndContigs => {
@@ -408,6 +460,9 @@ fn main() {
                                 separator,
                                 &genomes_and_contigs_option,
                                 &mut print_stream,
+                                bed_acc.as_mut(),
+                                bedcov_output_dir.as_deref(),
+                                bedcov_compress,
                             );
                         }
                     }
@@ -429,6 +484,9 @@ fn main() {
                         separator,
                         &genomes_and_contigs_option,
                         &mut print_stream,
+                        bed_acc.as_mut(),
+                        bedcov_output_dir.as_deref(),
+                        bedcov_compress,
                     );
                 };
             }
@@ -754,6 +812,19 @@ fn manually_check_args_at_runtime(m: &clap::ArgMatches) {
         && !m.contains_id("genome-info")
     {
         error!("You must provide a CheckM tab table, CheckM2 quality report or genome info file to use --min-completeness or --max-contamination");
+    }
+
+    // --regions-bed is incompatible with an explicitly provided --contig-end-exclusion
+    if m.try_get_one::<String>("regions-bed").is_ok()
+        && m.contains_id("regions-bed")
+        && m.try_get_one::<u64>("contig-end-exclusion").is_ok()
+        && m.value_source("contig-end-exclusion") == Some(clap::parser::ValueSource::CommandLine)
+    {
+        error!(
+            "--regions-bed is incompatible with --contig-end-exclusion. \
+             Remove --contig-end-exclusion or do not use --regions-bed."
+        );
+        process::exit(1);
     }
 }
 
@@ -1195,6 +1266,7 @@ fn parse_separator(m: &clap::ArgMatches) -> Option<u8> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_genome<
     R: coverm::bam_generator::NamedBamReader,
     T: coverm::bam_generator::NamedBamReaderGenerator<R>,
@@ -1205,6 +1277,9 @@ fn run_genome<
     separator: Option<u8>,
     genomes_and_contigs_option: &Option<GenomesAndContigs>,
     print_stream: &mut OutputWriter,
+    bed_acc: Option<&mut coverm::bedcov_accumulator::BedcovAccumulator>,
+    bedcov_dir: Option<&std::path::Path>,
+    bedcov_compress: bool,
 ) {
     let print_zeros = !m.get_flag("no-zeros");
     let flag_filter = FilterParameters::generate_from_clap(m).flag_filters;
@@ -1220,6 +1295,9 @@ fn run_genome<
             &flag_filter,
             single_genome,
             threads,
+            bed_acc,
+            bedcov_dir,
+            bedcov_compress,
         ),
 
         false => match genomes_and_contigs_option {
@@ -1231,6 +1309,9 @@ fn run_genome<
                 &flag_filter,
                 &mut estimators_and_taker.estimators,
                 threads,
+                bed_acc,
+                bedcov_dir,
+                bedcov_compress,
             ),
             None => unreachable!(),
         },
