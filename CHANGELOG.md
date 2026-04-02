@@ -5,6 +5,42 @@ All notable changes to CoverM will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### BED region coverage (`genome` subcommand) — `feature/bedcov-labels`
+- `--regions-bed <FILE>`: load a 4-column BED file (`chrom start end label`) to
+  compute per-region coverage statistics grouped by label
+- `--output-bedcov <DIR>`: write one multi-track bedGraph file per sample into
+  DIR (`{DIR}/{sample_id}.bedgraph`). Each file contains one
+  `track type=bedGraph` per label (alphabetical order), with `mean_cov` as the
+  data value. Compatible with IGV, trackViewer (R/Bioconductor), and
+  pyGenomeTracks. Note: `rtracklayer::import.bedGraph()` does not support
+  multi-track files — use trackViewer instead.
+- `--output-bedcov-compress`: gzip-compress bedGraph output files
+  (`.bedgraph.gz`). Requires `--output-bedcov`.
+
+### Changed
+
+- `--contig-end-exclusion` is now incompatible with `--regions-bed` in the
+  `genome` subcommand (runtime error if both are provided explicitly)
+
+---
+
+> **Pending integration from parallel branches (resolve at merge time):**
+>
+> #### Spatial coverage metrics — `feature/spatial-metrics` (v0.10.x)
+> - `islands_per_mbp`, `max_gap`, `gap_fraction` spatial coverage metrics
+> - `--min-island-length` option
+> - `--coverage-profile <dir>`: per-sample BigWig output
+>
+> #### CRAM support — `develop-cram` (v0.9.0)
+> - `--use-cram`: write cached alignment files in CRAM format instead of BAM
+>   (reduces disk usage ~50%). Available in `contig`, `genome`, and `make`.
+
+---
+
 ## [0.8.0] - 2026-01-19
 
 ### Added
