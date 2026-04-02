@@ -1,4 +1,5 @@
 extern crate assert_cli;
+extern crate flate2;
 extern crate rust_htslib;
 extern crate tempfile;
 
@@ -3756,6 +3757,444 @@ genome6~random_sequence_length_11003	0	0	0
             filtered_count += 1;
         }
         assert_eq!(filtered_count, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // BED coverage (--regions-bed / --output-bedcov) integration tests
+    // -----------------------------------------------------------------------
+
+    /// Test that --output-bedcov produces a bedGraph file with correct
+    /// multi-track structure and mean coverage values.
+    ///
+    /// Fixture: 2seqs.reads_for_seq1.bam (only seq1 has reads), default
+    /// contig-end-exclusion (75bp). The BED regions are outside the exclusion
+    /// zone so the coverage values reflect the full region.
+    ///
+    /// BED:  seq1  0   50   low   → mean = 21/50  = 0.420000
+    ///       seq1  100 200  high  → mean = 29/100 = 0.290000
+    ///       seq2  0   100  low   → mean = 0/100  = 0.000000
+    #[test]
+    fn test_bedcov_output_bedgraph_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        let bedgraph_path = dir.path().join("2seqs.reads_for_seq1.bedgraph");
+        assert!(bedgraph_path.exists(), "bedGraph file not created");
+
+        let content = std::fs::read_to_string(&bedgraph_path).unwrap();
+
+        // Two tracks in alphabetical label order
+        assert!(
+            content.contains("track type=bedGraph name=\"high\""),
+            "Missing 'high' track header"
+        );
+        assert!(
+            content.contains("track type=bedGraph name=\"low\""),
+            "Missing 'low' track header"
+        );
+
+        // 'high' track: seq1 [100,200) mean=0.290000
+        assert!(
+            content.contains("seq1\t100\t200\t0.290000"),
+            "Wrong mean_cov for high/seq1 [100,200)\ncontent:\n{}",
+            content
+        );
+
+        // 'low' track: seq1 [0,50) mean=0.420000
+        assert!(
+            content.contains("seq1\t0\t50\t0.420000"),
+            "Wrong mean_cov for low/seq1 [0,50)\ncontent:\n{}",
+            content
+        );
+
+        // 'low' track: seq2 [0,100) mean=0.000000 (zero coverage included)
+        assert!(
+            content.contains("seq2\t0\t100\t0.000000"),
+            "Missing zero-coverage region for low/seq2\ncontent:\n{}",
+            content
+        );
+    }
+
+    /// Test that 'high' track comes before 'low' track (alphabetical order).
+    #[test]
+    fn test_bedcov_label_order_alphabetical() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        let bedgraph_path = dir.path().join("2seqs.reads_for_seq1.bedgraph");
+        let content = std::fs::read_to_string(&bedgraph_path).unwrap();
+
+        let pos_high = content.find("track type=bedGraph name=\"high\"").unwrap();
+        let pos_low = content.find("track type=bedGraph name=\"low\"").unwrap();
+        assert!(
+            pos_high < pos_low,
+            "'high' should appear before 'low' (alphabetical)"
+        );
+    }
+
+    /// Test that --output-bedcov-compress produces a valid .gz file.
+    #[test]
+    fn test_bedcov_output_compressed() {
+        use std::io::Read as IoRead;
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+                "--output-bedcov-compress",
+            ])
+            .succeeds()
+            .unwrap();
+
+        let gz_path = dir.path().join("2seqs.reads_for_seq1.bedgraph.gz");
+        assert!(gz_path.exists(), ".bedgraph.gz file not created");
+
+        // Decompress and check content
+        let file = std::fs::File::open(&gz_path).unwrap();
+        let mut decoder = flate2::read::GzDecoder::new(file);
+        let mut content = String::new();
+        decoder.read_to_string(&mut content).unwrap();
+
+        assert!(content.contains("track type=bedGraph name=\"high\""));
+        assert!(content.contains("seq1\t100\t200\t0.290000"));
+        assert!(content.contains("seq1\t0\t50\t0.420000"));
+    }
+
+    /// Test that --regions-bed without --output-bedcov runs without error
+    /// (BED is loaded but no file is written).
+    #[test]
+    fn test_bedcov_regions_bed_no_output_dir() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+            ])
+            .succeeds()
+            .unwrap();
+    }
+
+    /// Non-regression: without --regions-bed, output is identical to baseline.
+    #[test]
+    fn test_bedcov_no_regression_without_regions_bed() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "-m",
+                "mean",
+                "-b",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "-s",
+                "q",
+                "--contig-end-exclusion",
+                "0",
+            ])
+            .succeeds()
+            .stdout()
+            .contains("Genome\t2seqs.reads_for_seq1 Mean\nse\t0.6")
+            .unwrap();
+    }
+
+    /// Test that passing multiple BAMs produces one bedGraph file per sample.
+    ///
+    /// BAM1: 2seqs.reads_for_seq1.bam  → only seq1 has reads
+    /// BAM2: 2seqs.reads_for_seq2.bam  → only seq2 has reads
+    /// BED:  seq1 [0,50) low, seq1 [100,200) high, seq2 [0,100) low
+    ///
+    /// Expected BAM2 values:
+    ///   seq1 [0,50)   low  → 0.000000
+    ///   seq1 [100,200) high → 0.000000
+    ///   seq2 [0,100)  low  → 89/100 = 0.890000
+    #[test]
+    fn test_bedcov_multiple_bams_one_file_each() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "tests/data/2seqs.reads_for_seq2.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        // One file per BAM
+        let f1 = dir.path().join("2seqs.reads_for_seq1.bedgraph");
+        let f2 = dir.path().join("2seqs.reads_for_seq2.bedgraph");
+        assert!(f1.exists(), "Missing bedGraph for BAM1");
+        assert!(f2.exists(), "Missing bedGraph for BAM2");
+
+        // BAM1 already covered by basic test; spot-check BAM2
+        let c2 = std::fs::read_to_string(&f2).unwrap();
+        assert!(
+            c2.contains("seq2\t0\t100\t0.890000"),
+            "Wrong seq2 coverage in BAM2\ncontent:\n{}",
+            c2
+        );
+        // BAM2 has no reads on seq1 → zero coverage
+        assert!(
+            c2.contains("seq1\t0\t50\t0.000000"),
+            "seq1 should be zero in BAM2\ncontent:\n{}",
+            c2
+        );
+    }
+
+    /// Test the with_contig_names code path (--genome-definition).
+    ///
+    /// Uses 7seqs BAM + a genome-definition file.
+    /// BED regions are on raw contig names (as they appear in the BAM header).
+    ///
+    /// Expected values:
+    ///   genome2~seq1 [100,300) covered → 243/200 = 1.215000
+    ///   genome5~seq2 [100,300) covered → 200/200 = 1.000000
+    ///   genome1~random_sequence_length_11000 [0,100) empty → 0.000000
+    #[test]
+    fn test_bedcov_with_genome_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "--genome-definition",
+                "tests/data/7seqs.definition",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_7seqs.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        let bedgraph = dir.path().join("7seqs.reads_for_seq1_and_seq2.bedgraph");
+        assert!(
+            bedgraph.exists(),
+            "bedGraph file not created for genome-definition path"
+        );
+
+        let content = std::fs::read_to_string(&bedgraph).unwrap();
+
+        // Labels: "covered" and "empty" (alphabetical: covered < empty)
+        let pos_covered = content
+            .find("track type=bedGraph name=\"covered\"")
+            .unwrap();
+        let pos_empty = content.find("track type=bedGraph name=\"empty\"").unwrap();
+        assert!(pos_covered < pos_empty, "covered should precede empty");
+
+        assert!(
+            content.contains("genome2~seq1\t100\t300\t1.215000"),
+            "Wrong coverage for genome2~seq1\ncontent:\n{}",
+            content
+        );
+        assert!(
+            content.contains("genome5~seq2\t100\t300\t1.000000"),
+            "Wrong coverage for genome5~seq2\ncontent:\n{}",
+            content
+        );
+        assert!(
+            content.contains("genome1~random_sequence_length_11000\t0\t100\t0.000000"),
+            "genome1 region should be zero\ncontent:\n{}",
+            content
+        );
+    }
+
+    /// Test that --contig-end-exclusion explicitly set with --regions-bed causes an error.
+    #[test]
+    fn test_bedcov_contig_end_exclusion_conflict() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--contig-end-exclusion",
+                "0",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+            ])
+            .fails()
+            .stderr()
+            .contains("--regions-bed is incompatible with --contig-end-exclusion")
+            .unwrap();
+    }
+
+    /// Test that a genome spanning multiple BAM contigs accumulates correctly.
+    ///
+    /// genome1 has 2 contigs (both in BED) but no reads → both zero.
+    /// genome2 has 1 contig with reads → non-zero.
+    #[test]
+    fn test_bedcov_multi_contig_genome() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/7seqs.reads_for_seq1_and_seq2.bam",
+                "--separator",
+                "~",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_7seqs.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        let bedgraph = dir.path().join("7seqs.reads_for_seq1_and_seq2.bedgraph");
+        let content = std::fs::read_to_string(&bedgraph).unwrap();
+
+        // genome2~seq1 with reads
+        assert!(
+            content.contains("genome2~seq1\t100\t300\t1.215000"),
+            "Wrong coverage for genome2~seq1\ncontent:\n{}",
+            content
+        );
+        // genome1 contig with no reads → zero
+        assert!(
+            content.contains("genome1~random_sequence_length_11000\t0\t100\t0.000000"),
+            "genome1 region should be zero\ncontent:\n{}",
+            content
+        );
+    }
+
+    /// Test that overlapping BED regions accumulate independently (no cross-contamination).
+    ///
+    /// BED:  seq1 [0,100)  region_a → 71/100 = 0.710000
+    ///       seq1 [50,150) region_b → 79/100 = 0.790000
+    #[test]
+    fn test_bedcov_overlapping_regions() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_overlapping.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        let bedgraph = dir.path().join("2seqs.reads_for_seq1.bedgraph");
+        let content = std::fs::read_to_string(&bedgraph).unwrap();
+
+        assert!(
+            content.contains("seq1\t0\t100\t0.710000"),
+            "Wrong coverage for region_a [0,100)\ncontent:\n{}",
+            content
+        );
+        assert!(
+            content.contains("seq1\t50\t150\t0.790000"),
+            "Wrong coverage for region_b [50,150)\ncontent:\n{}",
+            content
+        );
+    }
+
+    /// Test that a sample name containing '/' is sanitized correctly in the filename.
+    ///
+    /// In reference/reads mapping mode, stoit_name = "2seqs.fasta/reads_for_seq1.fna".
+    /// Expected filename: 2seqs.fasta__reads_for_seq1.fna.bedgraph
+    /// (sanitize_filename replaces '/' with '__').
+    #[test]
+    fn test_bedcov_sanitize_sample_name() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--reference",
+                "tests/data/2seqs.fasta",
+                "--single",
+                "tests/data/reads_for_seq1.fna",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "-p",
+                "minimap2-sr",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        // stoit_name = "2seqs.fasta/reads_for_seq1.fna" → sanitized to "2seqs.fasta__reads_for_seq1.fna"
+        let bedgraph = dir.path().join("2seqs.fasta__reads_for_seq1.fna.bedgraph");
+        assert!(
+            bedgraph.exists(),
+            "Expected sanitized filename '2seqs.fasta__reads_for_seq1.fna.bedgraph' not found in {:?}",
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
     }
 }
 

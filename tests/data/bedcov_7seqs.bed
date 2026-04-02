@@ -1,0 +1,3 @@
+genome2~seq1	100	300	covered
+genome5~seq2	100	300	covered
+genome1~random_sequence_length_11000	0	100	empty
