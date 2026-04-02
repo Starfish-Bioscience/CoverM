@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   multi-track files — use trackViewer instead.
 - `--output-bedcov-compress`: gzip-compress bedGraph output files
   (`.bedgraph.gz`). Requires `--output-bedcov`.
+- `--regions-bed-unlabeled [NAME]`: append an extra `(label, method)` column
+  set for bases not covered by any region in `--regions-bed`. The optional
+  `NAME` argument overrides the default column label `"unlabeled"`. Useful for
+  comparing labeled regions against intergenic or unannotated intervals.
+  Requires `--regions-bed`.
 
 ### Changed
 

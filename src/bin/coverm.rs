@@ -70,8 +70,13 @@ fn main() {
             let mut bedcov_output_dir: Option<std::path::PathBuf> = None;
             let bedcov_compress = m.get_flag("output-bedcov-compress");
             if let Some(bed_path) = m.get_one::<String>("regions-bed") {
-                let parsed_bed =
-                    coverm::bedcov_accumulator::ParsedBed::from_file(bed_path.as_str());
+                let unlabeled_label = m
+                    .get_one::<String>("regions-bed-unlabeled")
+                    .map(|s| s.as_str());
+                let parsed_bed = coverm::bedcov_accumulator::ParsedBed::from_file(
+                    bed_path.as_str(),
+                    unlabeled_label,
+                );
                 if let Some(dir_str) = m.get_one::<String>("output-bedcov") {
                     let dir = std::path::PathBuf::from(dir_str);
                     std::fs::create_dir_all(&dir).unwrap_or_else(|e| {

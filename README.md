@@ -237,6 +237,10 @@ coverm genome \
 - `--regions-bed <FILE>`: compute coverage for each BED region, grouped by
   label. Appends one extra column per `(label, method)` pair to the main
   output table.
+- `--regions-bed-unlabeled [NAME]`: append an extra column set for bases not
+  covered by any BED region. The optional `NAME` argument overrides the
+  default column label `"unlabeled"` (e.g. `--regions-bed-unlabeled intergenic`).
+  Requires `--regions-bed`.
 - `--output-bedcov <DIR>`: write one multi-track bedGraph file per sample
   (one `track type=bedGraph` per label, mean coverage as value).
   Compatible with IGV, trackViewer (R/Bioconductor), and pyGenomeTracks.

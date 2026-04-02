@@ -4196,6 +4196,108 @@ genome6~random_sequence_length_11003	0	0	0
                 .collect::<Vec<_>>()
         );
     }
+
+    // -----------------------------------------------------------------------
+    // --regions-bed-unlabeled integration tests
+    // -----------------------------------------------------------------------
+
+    /// --regions-bed-unlabeled (default label "unlabeled") adds a column for
+    /// bases not covered by any BED label.
+    ///
+    /// Fixture: 2seqs.reads_for_seq1.bam, separator "q" → genome "se" (seq1+seq2).
+    /// BED: seq1[0,50) low, seq1[100,200) high, seq2[0,100) low.
+    /// Unlabeled regions: seq1[50,100) + seq1[200,1000) + seq2[100,1000).
+    ///
+    /// Expected header columns: …Mean high  …Mean low  …Mean unlabeled
+    /// Expected data:  high=0.29, low=0.42, unlabeled≈1.353
+    #[test]
+    fn test_bedcov_unlabeled_default_name() {
+        // Header contains the unlabeled column
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--regions-bed-unlabeled",
+            ])
+            .succeeds()
+            .stdout()
+            .contains(
+                "Mean high\t2seqs.reads_for_seq1 Mean low\t2seqs.reads_for_seq1 Mean unlabeled",
+            )
+            .unwrap();
+
+        // Labeled values are unchanged; unlabeled value is non-zero
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--regions-bed-unlabeled",
+            ])
+            .succeeds()
+            .stdout()
+            .contains("0.29\t0.42\t1.35")
+            .unwrap();
+    }
+
+    /// --regions-bed-unlabeled NAME uses a custom column label instead of "unlabeled".
+    #[test]
+    fn test_bedcov_unlabeled_custom_name() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--regions-bed-unlabeled",
+                "intergenic",
+            ])
+            .succeeds()
+            .stdout()
+            .contains("Mean intergenic")
+            .unwrap();
+    }
+
+    /// Without --regions-bed-unlabeled, the output has 4 tab-separated columns
+    /// (Genome + Mean + Mean high + Mean low) — no unlabeled column.
+    #[test]
+    fn test_bedcov_unlabeled_absent_without_flag() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+            ])
+            .succeeds()
+            // header ends with "Mean low" (no unlabeled after it)
+            .stdout()
+            .contains("Mean high\t2seqs.reads_for_seq1 Mean low\n")
+            .unwrap();
+    }
 }
 
 // TODO: Add mismatching bases test

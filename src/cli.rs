@@ -1507,6 +1507,19 @@ Ben J. Woodcroft <benjwoodcroft near gmail.com>
                         .requires("output-bedcov"),
                 )
                 .arg(
+                    Arg::new("regions-bed-unlabeled")
+                        .long("regions-bed-unlabeled")
+                        .help(
+                            "Add an extra column for bases not covered by any label in \
+                             --regions-bed. The optional NAME argument sets the column label \
+                             (default: \"unlabeled\"). Requires --regions-bed.",
+                        )
+                        .value_name("NAME")
+                        .num_args(0..=1)
+                        .default_missing_value("unlabeled")
+                        .requires("regions-bed"),
+                )
+                .arg(
                     Arg::new("output-format")
                         .long("output-format")
                         .value_parser(["sparse", "dense"])

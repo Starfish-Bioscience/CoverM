@@ -35,17 +35,21 @@ pub struct RegionInfo {
 pub struct ParsedBed {
     /// chrom → regions sorted by start
     pub regions_by_chrom: HashMap<String, Vec<BedRegion>>,
-    /// alphabetical list of distinct labels
+    /// alphabetical list of distinct labels (real labels first, unlabeled pseudo-label last)
     pub labels: Vec<String>,
     pub label_to_idx: HashMap<String, usize>,
     /// all_regions[global_idx] — original BED order
     pub all_regions: Vec<RegionInfo>,
     /// length of each region in bp, parallel to all_regions
     pub region_lengths: Vec<u32>,
+    /// true when --regions-bed-unlabeled was requested
+    pub with_unlabeled: bool,
+    /// index of the synthetic unlabeled label (= labels.len()-1 when with_unlabeled)
+    pub unlabeled_label_idx: Option<usize>,
 }
 
 impl ParsedBed {
-    pub fn from_file(path: &str) -> ParsedBed {
+    pub fn from_file(path: &str, unlabeled_label: Option<&str>) -> ParsedBed {
         let file = fs::File::open(path)
             .unwrap_or_else(|e| panic!("Cannot open --regions-bed file '{}': {}", path, e));
         let reader = BufReader::new(file);
@@ -119,12 +123,30 @@ impl ParsedBed {
         }
 
         // --- build label index (alphabetical) ---
-        let labels: Vec<String> = label_set.into_iter().collect();
-        let label_to_idx: HashMap<String, usize> = labels
+        let mut labels: Vec<String> = label_set.into_iter().collect();
+        let mut label_to_idx: HashMap<String, usize> = labels
             .iter()
             .enumerate()
             .map(|(i, l)| (l.clone(), i))
             .collect();
+
+        // --- optional synthetic unlabeled label (appended after alphabetical labels) ---
+        let (with_unlabeled, unlabeled_label_idx) = match unlabeled_label {
+            None => (false, None),
+            Some(name) => {
+                if label_to_idx.contains_key(name) {
+                    panic!(
+                        "--regions-bed-unlabeled label '{}' conflicts with an existing \
+                         label in '{}'; choose a different name",
+                        name, path
+                    );
+                }
+                let idx = labels.len();
+                labels.push(name.to_string());
+                label_to_idx.insert(name.to_string(), idx);
+                (true, Some(idx))
+            }
+        };
 
         // --- build all_regions, regions_by_chrom ---
         let mut all_regions: Vec<RegionInfo> = Vec::with_capacity(raw.len());
@@ -183,6 +205,8 @@ impl ParsedBed {
             label_to_idx,
             all_regions,
             region_lengths,
+            with_unlabeled,
+            unlabeled_label_idx,
         }
     }
 }
@@ -283,6 +307,8 @@ pub struct BedcovAccumulator {
     pcov_scratch: Vec<i64>,
     /// sub_ups scratch for Feature 2 (reused, never shrunk)
     sub_ups_scratch: Vec<i32>,
+    /// merged-interval scratch for unlabeled gap computation (reused, never shrunk)
+    merged_scratch: Vec<(usize, usize)>,
 }
 
 impl BedcovAccumulator {
@@ -301,6 +327,7 @@ impl BedcovAccumulator {
             genome_label_estimators: HashMap::new(),
             pcov_scratch: Vec::new(),
             sub_ups_scratch: Vec::new(),
+            merged_scratch: Vec::new(),
         }
     }
 
@@ -338,13 +365,14 @@ impl BedcovAccumulator {
     ///
     /// `genome_name` is used to key the per-genome label estimators (Feature 2).
     pub fn process_contig(&mut self, tid: u32, genome_name: &str, ups_and_downs: &[i32]) {
-        // Move regions out of the HashMap so we release the borrow on
-        // `current_index` before entering the loop.  We put them back afterwards
-        // to avoid any heap allocation (no clone needed).
-        let regions = match self.current_index.regions_by_tid.get_mut(&tid) {
-            Some(slot) => std::mem::take(slot),
-            None => return,
-        };
+        let has_bed_regions = self.current_index.regions_by_tid.contains_key(&tid);
+        // Unlabeled gaps only matter when Feature 2 estimators are active.
+        let need_unlabeled =
+            self.parsed_bed.with_unlabeled && !self.label_estimator_templates.is_empty();
+
+        if !has_bed_regions && !need_unlabeled {
+            return;
+        }
 
         let n = ups_and_downs.len();
 
@@ -372,6 +400,15 @@ impl BedcovAccumulator {
                 .insert(genome_name.to_string(), fresh);
         }
 
+        // Take regions out of the HashMap (zero-cost move).
+        // If the contig has no BED regions, use an empty Vec.
+        let regions = if has_bed_regions {
+            std::mem::take(self.current_index.regions_by_tid.get_mut(&tid).unwrap())
+        } else {
+            Vec::new()
+        };
+
+        // --- Labeled regions (Feature 1 + Feature 2) ---
         for region in &regions {
             let s = (region.start as usize).min(n);
             let e = (region.end as usize).min(n);
@@ -417,9 +454,83 @@ impl BedcovAccumulator {
             }
         }
 
+        // --- Unlabeled gaps (Feature 2 only) ---
+        //
+        // Build the merged union of all labeled regions on this contig (across all
+        // labels, regardless of which label), then feed the complement intervals to
+        // the unlabeled estimator.  Merging is required to avoid under-counting gaps
+        // when regions from different labels overlap.
+        if need_unlabeled {
+            let unlabeled_idx = self.parsed_bed.unlabeled_label_idx.unwrap();
+
+            // Merge overlapping/adjacent intervals.  `regions` is already sorted by
+            // start (guaranteed by `reinit_for_bam` → `regions_by_chrom` sort).
+            // Reuse the scratch buffer to avoid a heap allocation per contig.
+            self.merged_scratch.clear();
+            for region in &regions {
+                let s = (region.start as usize).min(n);
+                let e = (region.end as usize).min(n);
+                if s >= e {
+                    continue;
+                }
+                if let Some(last) = self.merged_scratch.last_mut() {
+                    if s < last.1 {
+                        // overlapping or adjacent — extend
+                        last.1 = last.1.max(e);
+                    } else {
+                        self.merged_scratch.push((s, e));
+                    }
+                } else {
+                    self.merged_scratch.push((s, e));
+                }
+            }
+
+            // Iterate over gaps between merged intervals using an index loop.
+            // Reading `self.merged_scratch[i]` as a Copy value (usize, usize) releases
+            // the borrow before the destructuring of `self` below — no clone needed.
+            // A virtual sentinel at index n_merged represents (n, n) so the final gap
+            // [last_me, n) is handled by the same loop body.
+            let n_merged = self.merged_scratch.len();
+            let mut gap_start = 0usize;
+            for i in 0..=n_merged {
+                let (ms, me) = if i < n_merged {
+                    self.merged_scratch[i]
+                } else {
+                    (n, n)
+                };
+                if gap_start < ms {
+                    // Gap interval: [gap_start, ms)
+                    let gs = gap_start;
+                    let len = ms - gs;
+                    if self.sub_ups_scratch.len() < len {
+                        self.sub_ups_scratch.resize(len, 0);
+                    }
+                    self.sub_ups_scratch[0] =
+                        (self.pcov_scratch[gs + 1] - self.pcov_scratch[gs]) as i32;
+                    if len > 1 {
+                        self.sub_ups_scratch[1..len]
+                            .copy_from_slice(&ups_and_downs[(gs + 1)..(gs + len)]);
+                    }
+                    let BedcovAccumulator {
+                        sub_ups_scratch,
+                        genome_label_estimators,
+                        ..
+                    } = self;
+                    let sub_slice = &sub_ups_scratch[..len];
+                    let label_ests = genome_label_estimators.get_mut(genome_name).unwrap();
+                    for est in label_ests[unlabeled_idx].iter_mut() {
+                        est.add_contig(sub_slice, 0, 0, 0.0);
+                    }
+                }
+                gap_start = me;
+            }
+        }
+
         // Restore regions into the HashMap (zero-cost move, no allocation).
-        if let Some(slot) = self.current_index.regions_by_tid.get_mut(&tid) {
-            *slot = regions;
+        if has_bed_regions {
+            if let Some(slot) = self.current_index.regions_by_tid.get_mut(&tid) {
+                *slot = regions;
+            }
         }
     }
 
@@ -556,8 +667,18 @@ mod tests {
 
     fn make_accumulator(bed_content: &str) -> BedcovAccumulator {
         let f = make_bed_file(bed_content);
-        let parsed = ParsedBed::from_file(f.path().to_str().unwrap());
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None);
         BedcovAccumulator::new(parsed, vec![])
+    }
+
+    fn make_accumulator_unlabeled(
+        bed_content: &str,
+        templates: Vec<CoverageEstimator>,
+        unlabeled_name: &str,
+    ) -> BedcovAccumulator {
+        let f = make_bed_file(bed_content);
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), Some(unlabeled_name));
+        BedcovAccumulator::new(parsed, templates)
     }
 
     /// Build a fake BedIndex directly (no real BAM header needed).
@@ -687,7 +808,7 @@ mod tests {
         templates: Vec<CoverageEstimator>,
     ) -> BedcovAccumulator {
         let f = make_bed_file(bed_content);
-        let parsed = ParsedBed::from_file(f.path().to_str().unwrap());
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None);
         BedcovAccumulator::new(parsed, templates)
     }
 
@@ -781,7 +902,7 @@ mod tests {
         // tid=1: [0,5)  ups=[2,0,0,0,-2,…] cov=[2,2,2,2,0], sum_cov=8
         // Total observed bases = 10, total sum = 12 → mean = 1.2
         let f = make_bed_file("chr1\t0\t5\tlabel_a\nchr2\t0\t5\tlabel_a\n");
-        let parsed = ParsedBed::from_file(f.path().to_str().unwrap());
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None);
         let mut acc = BedcovAccumulator::new(
             parsed,
             vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
@@ -1049,6 +1170,150 @@ mod tests {
             (frac - 0.4).abs() < 1e-6,
             "CovFrac [6,11): expected 0.4, got {}",
             frac
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Unlabeled-gaps tests
+    // -----------------------------------------------------------------------
+
+    /// Basic unlabeled: single labeled region [2,7) on a 10-bp contig.
+    /// Gaps are [0,2) and [7,10).
+    /// Coverage: cov=[0,0,1,1,1,1,0,0,0,0]
+    /// label_a mean = (1+1+1+1+0)/5 = 0.8
+    /// unlabeled mean over [0,2)∪[7,10):
+    ///   [0,2): sum=0, len=2
+    ///   [7,10): sum=0, len=3
+    ///   total_sum=0, total_len=5 → mean=0.0
+    #[test]
+    fn test_unlabeled_basic() {
+        let mut acc = make_accumulator_unlabeled(
+            "chr1\t2\t7\tlabel_a\n",
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+            "unlabeled",
+        );
+        fake_index_tid0(&mut acc);
+
+        // labels: ["label_a", "unlabeled"]
+        assert_eq!(acc.parsed_bed.labels, vec!["label_a", "unlabeled"]);
+        assert_eq!(acc.parsed_bed.unlabeled_label_idx, Some(1));
+
+        let ups: Vec<i32> = vec![0, 0, 1, 0, 0, 0, -1, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        assert_eq!(covs.len(), 2);
+        assert!(
+            (covs[0][0] - 0.8).abs() < 1e-5,
+            "label_a mean: expected 0.8, got {}",
+            covs[0][0]
+        );
+        assert!(
+            covs[1][0].abs() < 1e-5,
+            "unlabeled mean: expected 0.0, got {}",
+            covs[1][0]
+        );
+    }
+
+    /// Unlabeled with coverage in the gaps.
+    /// Contig 10 bp, coverage = [3,3,3,3,3,3,3,3,3,3] (uniform 3, no drop at end).
+    /// Region [3,7) → label_a mean = 3.0.
+    /// Gaps [0,3) + [7,10), each bp has cov=3 → unlabeled mean = 3.0.
+    #[test]
+    fn test_unlabeled_with_gap_coverage() {
+        let mut acc = make_accumulator_unlabeled(
+            "chr1\t3\t7\tlabel_a\n",
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+            "unlabeled",
+        );
+        fake_index_tid0(&mut acc);
+
+        // No drop at the end so all 10 positions have cov=3.
+        let ups: Vec<i32> = vec![3, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        assert!(
+            (covs[0][0] - 3.0).abs() < 1e-5,
+            "label_a mean: expected 3.0, got {}",
+            covs[0][0]
+        );
+        assert!(
+            (covs[1][0] - 3.0).abs() < 1e-5,
+            "unlabeled mean: expected 3.0, got {}",
+            covs[1][0]
+        );
+    }
+
+    /// Unlabeled with cross-label overlapping regions.
+    /// Contig 10 bp, cov = [1,1,1,1,1,1,1,1,1,1] (uniform 1, no drop at end).
+    /// label_a [1,5), label_b [3,8) — overlap at [3,5) is cross-label.
+    /// Merged union: [1,8) → gaps: [0,1) and [8,10).
+    /// label_a mean over [1,5): 1.0
+    /// label_b mean over [3,8): 1.0
+    /// unlabeled mean over [0,1)∪[8,10): 3 bp with cov=1 → mean=1.0
+    #[test]
+    fn test_unlabeled_cross_label_overlap() {
+        let mut acc = make_accumulator_unlabeled(
+            "chr1\t1\t5\tlabel_a\nchr1\t3\t8\tlabel_b\n",
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+            "unlabeled",
+        );
+        fake_index_tid0(&mut acc);
+
+        // No drop so all 10 positions have cov=1.
+        let ups: Vec<i32> = vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        // labels sorted alphabetically: label_a=0, label_b=1, unlabeled=2
+        assert_eq!(covs.len(), 3, "expected 3 labels (a, b, unlabeled)");
+        assert!(
+            (covs[0][0] - 1.0).abs() < 1e-5,
+            "label_a mean: expected 1.0, got {}",
+            covs[0][0]
+        );
+        assert!(
+            (covs[1][0] - 1.0).abs() < 1e-5,
+            "label_b mean: expected 1.0, got {}",
+            covs[1][0]
+        );
+        assert!(
+            (covs[2][0] - 1.0).abs() < 1e-5,
+            "unlabeled mean: expected 1.0, got {}",
+            covs[2][0]
+        );
+    }
+
+    /// Contig with NO BED regions at all — the entire contig is unlabeled.
+    /// Contig 5 bp, cov = [2,2,2,2,2].
+    /// process_contig is called; the entire contig is fed to the unlabeled estimator.
+    #[test]
+    fn test_unlabeled_no_bed_regions_on_contig() {
+        // BED has a region on chr2 but we process chr1 (tid=0 mapped to empty slot).
+        let f = make_bed_file("chr2\t0\t5\tlabel_a\n");
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), Some("unlabeled"));
+        let mut acc = BedcovAccumulator::new(
+            parsed,
+            vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
+        );
+        // tid=0 has NO entry in current_index (chr1 not in BED) — leave index empty.
+        // process_contig should still run and populate the unlabeled estimator.
+        // No drop so all 5 positions have cov=2.
+        let ups: Vec<i32> = vec![2, 0, 0, 0, 0];
+        acc.process_contig(0, "g1", &ups);
+
+        let covs = acc.take_label_coverages("g1");
+        assert_eq!(covs.len(), 2, "expected 2 labels (label_a, unlabeled)");
+        assert!(
+            covs[0][0].abs() < 1e-5,
+            "label_a mean: expected 0.0 (no regions on this contig), got {}",
+            covs[0][0]
+        );
+        assert!(
+            (covs[1][0] - 2.0).abs() < 1e-5,
+            "unlabeled mean: expected 2.0, got {}",
+            covs[1][0]
         );
     }
 }
