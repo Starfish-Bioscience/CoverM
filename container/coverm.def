@@ -1,0 +1,82 @@
+Bootstrap: docker
+From: mambaorg/micromamba:1.5.10-noble
+
+%labels
+    Author Starfish-Bioscience
+    Version 0.10.0
+    Description CoverM with CRAM + spatial metrics support
+
+%files
+    coverm /usr/local/bin/coverm
+    conda.yml /scratch/conda.yml
+
+%post
+    # Install man-db so --full-help works (bird_tool_utils generates roff).
+    # The base image has a stub /usr/bin/man that must be removed first,
+    # and dpkg diversions must be cleared for man-db to install properly.
+    rm -f /usr/bin/man
+    dpkg-divert --quiet --remove --rename /usr/bin/man 2>/dev/null || true
+    apt-get update && apt-get install -y --no-install-recommends man-db && \
+        dpkg --configure -a && \
+        rm -rf /var/lib/apt/lists/*
+    micromamba install -y -n base -f /scratch/conda.yml
+    micromamba install -y -n base conda-forge::procps-ng
+    micromamba env export --name base --explicit > environment.lock
+    echo ">> CONDA_LOCK_START"
+    cat environment.lock
+    echo "<< CONDA_LOCK_END"
+    micromamba clean -a -y
+
+    # Make binary executable
+    chmod +x /usr/local/bin/coverm
+
+%environment
+    export PATH="$MAMBA_ROOT_PREFIX/bin:/usr/local/bin:$PATH"
+    export LC_ALL=C
+
+%runscript
+    coverm "$@"
+
+%test
+    echo "Testing CoverM installation..."
+    coverm --version
+    echo "Testing dependencies..."
+    python3 --version
+    samtools --version | head -1
+    minimap2 --version
+    bwa 2>&1 | head -3
+    bwa-mem2 version 2>&1 | tail -1
+    skani -V
+    fastANI --version 2>&1 | head -1
+    strobealign --version
+
+%help
+    CoverM version 0.10.0 with CRAM + spatial metrics support
+    Full installation with all dependencies
+
+    Available tools:
+    - coverm (main tool)
+    - samtools (+ tabix for BedGraph indexing)
+    - minimap2
+    - bwa
+    - bwa-mem2
+    - skani
+    - fastANI
+    - strobealign
+
+    New in 0.10.0:
+    - Spatial coverage metrics: islands_per_mbp, max_gap, gap_fraction
+    - BedGraph coverage profile output (--coverage-profile)
+    - --min-island-length option
+
+    Usage:
+        apptainer run coverm.sif genome --help
+        apptainer exec coverm.sif coverm genome [options]
+
+    Example with spatial metrics:
+        apptainer exec coverm.sif coverm genome \
+            -b aligned.bam \
+            --genome-definition genomes.tsv \
+            -m mean covered_fraction islands_per_mbp max_gap gap_fraction \
+            --min-island-length 50 \
+            --coverage-profile profiles/
