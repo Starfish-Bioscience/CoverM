@@ -25,7 +25,7 @@ pub struct BedRegion {
 
 #[derive(Debug, Clone)]
 pub struct RegionInfo {
-    pub chrom: String,
+    pub chrom_idx: u32, // index into ParsedBed.chrom_table
     pub start: u32,
     pub end: u32,
     pub label_idx: usize,
@@ -42,6 +42,8 @@ pub struct ParsedBed {
     pub all_regions: Option<Vec<RegionInfo>>,
     /// length of each region in bp, parallel to all_regions (Some only when --output-bedcov requested)
     pub region_lengths: Option<Vec<u32>>,
+    /// ordered list of distinct chrom names; region.chrom_idx indexes into this vec
+    pub chrom_table: Vec<String>,
     /// true when --regions-bed-unlabeled was requested
     pub with_unlabeled: bool,
     /// index of the synthetic unlabeled label (= labels.len()-1 when with_unlabeled)
@@ -161,12 +163,20 @@ impl ParsedBed {
             None
         };
         let mut regions_by_chrom: HashMap<String, Vec<BedRegion>> = HashMap::new();
+        // Intern chrom strings: deduplicate O(N) heap allocations down to O(distinct chroms).
+        let mut chrom_intern: HashMap<String, u32> = HashMap::new();
+        let mut chrom_table: Vec<String> = Vec::new();
 
         for (global_idx, r) in raw.into_iter().enumerate() {
             let label_idx = label_to_idx[&r.label];
+            let chrom_idx = *chrom_intern.entry(r.chrom.clone()).or_insert_with(|| {
+                let idx = chrom_table.len() as u32;
+                chrom_table.push(r.chrom.clone());
+                idx
+            });
             if let Some(ref mut ar) = all_regions {
                 ar.push(RegionInfo {
-                    chrom: r.chrom.clone(),
+                    chrom_idx,
                     start: r.start,
                     end: r.end,
                     label_idx,
@@ -229,6 +239,7 @@ impl ParsedBed {
             label_to_idx,
             all_regions,
             region_lengths,
+            chrom_table,
             with_unlabeled,
             unlabeled_label_idx,
         }
@@ -659,10 +670,11 @@ impl BedcovAccumulator {
                 } else {
                     0.0
                 };
+                let chrom = &bed.chrom_table[region.chrom_idx as usize];
                 writeln!(
                     w,
                     "{}\t{}\t{}\t{:.6}",
-                    region.chrom, region.start, region.end, mean_cov
+                    chrom, region.start, region.end, mean_cov
                 )
                 .expect("Error writing bedGraph record");
             }
