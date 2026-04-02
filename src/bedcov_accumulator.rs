@@ -38,10 +38,10 @@ pub struct ParsedBed {
     /// alphabetical list of distinct labels (real labels first, unlabeled pseudo-label last)
     pub labels: Vec<String>,
     pub label_to_idx: HashMap<String, usize>,
-    /// all_regions[global_idx] — original BED order
-    pub all_regions: Vec<RegionInfo>,
-    /// length of each region in bp, parallel to all_regions
-    pub region_lengths: Vec<u32>,
+    /// all_regions[global_idx] — original BED order (Some only when --output-bedcov requested)
+    pub all_regions: Option<Vec<RegionInfo>>,
+    /// length of each region in bp, parallel to all_regions (Some only when --output-bedcov requested)
+    pub region_lengths: Option<Vec<u32>>,
     /// true when --regions-bed-unlabeled was requested
     pub with_unlabeled: bool,
     /// index of the synthetic unlabeled label (= labels.len()-1 when with_unlabeled)
@@ -49,7 +49,7 @@ pub struct ParsedBed {
 }
 
 impl ParsedBed {
-    pub fn from_file(path: &str, unlabeled_label: Option<&str>) -> ParsedBed {
+    pub fn from_file(path: &str, unlabeled_label: Option<&str>, need_bedgraph: bool) -> ParsedBed {
         let file = fs::File::open(path)
             .unwrap_or_else(|e| panic!("Cannot open --regions-bed file '{}': {}", path, e));
         let reader = BufReader::new(file);
@@ -149,20 +149,32 @@ impl ParsedBed {
         };
 
         // --- build all_regions, regions_by_chrom ---
-        let mut all_regions: Vec<RegionInfo> = Vec::with_capacity(raw.len());
-        let mut region_lengths: Vec<u32> = Vec::with_capacity(raw.len());
+        let n_raw = raw.len();
+        let mut all_regions: Option<Vec<RegionInfo>> = if need_bedgraph {
+            Some(Vec::with_capacity(n_raw))
+        } else {
+            None
+        };
+        let mut region_lengths: Option<Vec<u32>> = if need_bedgraph {
+            Some(Vec::with_capacity(n_raw))
+        } else {
+            None
+        };
         let mut regions_by_chrom: HashMap<String, Vec<BedRegion>> = HashMap::new();
 
-        for r in raw {
-            let global_idx = all_regions.len();
+        for (global_idx, r) in raw.into_iter().enumerate() {
             let label_idx = label_to_idx[&r.label];
-            all_regions.push(RegionInfo {
-                chrom: r.chrom.clone(),
-                start: r.start,
-                end: r.end,
-                label_idx,
-            });
-            region_lengths.push(r.end - r.start);
+            if let Some(ref mut ar) = all_regions {
+                ar.push(RegionInfo {
+                    chrom: r.chrom.clone(),
+                    start: r.start,
+                    end: r.end,
+                    label_idx,
+                });
+            }
+            if let Some(ref mut rl) = region_lengths {
+                rl.push(r.end - r.start);
+            }
             regions_by_chrom
                 .entry(r.chrom)
                 .or_default()
@@ -206,7 +218,7 @@ impl ParsedBed {
 
         info!(
             "Loaded {} regions across {} distinct label(s) from '{}'",
-            all_regions.len(),
+            n_raw,
             labels.len(),
             path
         );
@@ -308,8 +320,8 @@ pub struct BedIndex {
 pub struct BedcovAccumulator {
     pub parsed_bed: ParsedBed,
     pub current_index: BedIndex,
-    /// sum of coverage per region (reset at start of each BAM)
-    pub region_sums: Vec<i64>,
+    /// sum of coverage per region (reset at start of each BAM); None when --output-bedcov not requested
+    pub region_sums: Option<Vec<i64>>,
     /// Feature 2 — method templates (with end_excl=0, min_frac=0)
     pub label_estimator_templates: Vec<CoverageEstimator>,
     /// Feature 2 — per-genome per-label per-method estimators (lazily created)
@@ -328,13 +340,16 @@ impl BedcovAccumulator {
         parsed_bed: ParsedBed,
         label_estimator_templates: Vec<CoverageEstimator>,
     ) -> BedcovAccumulator {
-        let n = parsed_bed.all_regions.len();
+        let region_sums = parsed_bed
+            .all_regions
+            .as_ref()
+            .map(|ar| vec![0i64; ar.len()]);
         BedcovAccumulator {
             parsed_bed,
             current_index: BedIndex {
                 regions_by_tid: HashMap::new(),
             },
-            region_sums: vec![0i64; n],
+            region_sums,
             label_estimator_templates,
             genome_label_estimators: HashMap::new(),
             pcov_scratch: Vec::new(),
@@ -345,7 +360,9 @@ impl BedcovAccumulator {
 
     /// Rebuild BedIndex from the BAM header (call once per BAM, before processing reads).
     pub fn reinit_for_bam(&mut self, header: &bam::HeaderView) {
-        self.region_sums.fill(0);
+        if let Some(ref mut sums) = self.region_sums {
+            sums.fill(0);
+        }
         let mut regions_by_tid: HashMap<u32, Vec<IndexedRegion>> = HashMap::new();
 
         for (tid, name_bytes) in header.target_names().iter().enumerate() {
@@ -435,8 +452,11 @@ impl BedcovAccumulator {
                 continue;
             }
 
-            // Feature 1 — accumulate region coverage sum
-            self.region_sums[region.global_idx] += self.pcov_scratch[e] - self.pcov_scratch[s];
+            // Feature 1 — accumulate region coverage sum (only when bedgraph output requested)
+            let delta = self.pcov_scratch[e] - self.pcov_scratch[s];
+            if let Some(ref mut sums) = self.region_sums {
+                sums[region.global_idx] += delta;
+            }
 
             // Feature 2 — call add_contig on per-label estimators via sub_ups.
             // We need to borrow both `sub_ups_scratch` (immutably, after writing)
@@ -612,18 +632,30 @@ impl BedcovAccumulator {
 
     fn write_bedgraph<W: Write>(&self, w: &mut W, _sample_name: &str) {
         let bed = &self.parsed_bed;
+        let all_regions = bed
+            .all_regions
+            .as_ref()
+            .expect("write_bedgraph called without all_regions (need_bedgraph was false)");
+        let region_lengths = bed
+            .region_lengths
+            .as_ref()
+            .expect("write_bedgraph called without region_lengths");
+        let region_sums = self
+            .region_sums
+            .as_ref()
+            .expect("write_bedgraph called without region_sums");
 
         for (label_idx, label) in bed.labels.iter().enumerate() {
             writeln!(w, "track type=bedGraph name=\"{}\"", label)
                 .expect("Error writing bedGraph track header");
 
-            for (global_idx, region) in bed.all_regions.iter().enumerate() {
+            for (global_idx, region) in all_regions.iter().enumerate() {
                 if region.label_idx != label_idx {
                     continue;
                 }
-                let len = bed.region_lengths[global_idx] as i64;
+                let len = region_lengths[global_idx] as i64;
                 let mean_cov = if len > 0 {
-                    self.region_sums[global_idx] as f64 / len as f64
+                    region_sums[global_idx] as f64 / len as f64
                 } else {
                     0.0
                 };
@@ -679,7 +711,8 @@ mod tests {
 
     fn make_accumulator(bed_content: &str) -> BedcovAccumulator {
         let f = make_bed_file(bed_content);
-        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None);
+        // need_bedgraph=true so Feature-1 tests can inspect region_sums directly.
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None, true);
         BedcovAccumulator::new(parsed, vec![])
     }
 
@@ -689,7 +722,7 @@ mod tests {
         unlabeled_name: &str,
     ) -> BedcovAccumulator {
         let f = make_bed_file(bed_content);
-        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), Some(unlabeled_name));
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), Some(unlabeled_name), false);
         BedcovAccumulator::new(parsed, templates)
     }
 
@@ -722,7 +755,7 @@ mod tests {
         fake_index_tid0(&mut acc);
         let ups: Vec<i32> = vec![0, 0, 1, 0, 0, 0, -1, 0, 0, 0];
         acc.process_contig(0, "g1", &ups);
-        assert_eq!(acc.region_sums[0], 4);
+        assert_eq!(acc.region_sums.as_ref().unwrap()[0], 4);
     }
 
     #[test]
@@ -733,7 +766,7 @@ mod tests {
         let ups: Vec<i32> = vec![0, 0, 1, 0, 0, 0, -1, 0, 0, 0];
         acc.process_contig(0, "g1", &ups);
         // coverage at [8,10) = 0, so sum = 0
-        assert_eq!(acc.region_sums[0], 0);
+        assert_eq!(acc.region_sums.as_ref().unwrap()[0], 0);
     }
 
     #[test]
@@ -742,7 +775,7 @@ mod tests {
         fake_index_tid0(&mut acc);
         let ups: Vec<i32> = vec![0; 10];
         acc.process_contig(0, "g1", &ups);
-        assert_eq!(acc.region_sums[0], 0);
+        assert_eq!(acc.region_sums.as_ref().unwrap()[0], 0);
     }
 
     #[test]
@@ -756,8 +789,8 @@ mod tests {
         let ups: Vec<i32> = vec![1, 0, 0, -1, 0, 2, 0, 0, -2, 0];
         acc.process_contig(0, "g1", &ups);
         // region0=[0,3): sum=3, region1=[5,8): sum=6
-        assert_eq!(acc.region_sums[0], 3);
-        assert_eq!(acc.region_sums[1], 6);
+        assert_eq!(acc.region_sums.as_ref().unwrap()[0], 3);
+        assert_eq!(acc.region_sums.as_ref().unwrap()[1], 6);
     }
 
     #[test]
@@ -768,8 +801,8 @@ mod tests {
         // uniform coverage = 1 everywhere
         let ups: Vec<i32> = vec![1, 0, 0, 0, 0, 0, 0, 0, -1, 0];
         acc.process_contig(0, "g1", &ups);
-        assert_eq!(acc.region_sums[0], 5); // [0,5)
-        assert_eq!(acc.region_sums[1], 5); // [3,8)
+        assert_eq!(acc.region_sums.as_ref().unwrap()[0], 5); // [0,5)
+        assert_eq!(acc.region_sums.as_ref().unwrap()[1], 5); // [3,8)
     }
 
     #[test]
@@ -787,8 +820,8 @@ mod tests {
         fake_index_tid0(&mut acc);
         let ups: Vec<i32> = vec![1, 0, 0, 0, 0, -1, 0, 0, 0, 0];
         acc.process_contig(0, "g1", &ups);
-        assert_eq!(acc.region_sums[0], 5); // label_a
-        assert_eq!(acc.region_sums[1], 0); // label_b (no coverage)
+        assert_eq!(acc.region_sums.as_ref().unwrap()[0], 5); // label_a
+        assert_eq!(acc.region_sums.as_ref().unwrap()[1], 0); // label_b (no coverage)
     }
 
     #[test]
@@ -820,7 +853,7 @@ mod tests {
         templates: Vec<CoverageEstimator>,
     ) -> BedcovAccumulator {
         let f = make_bed_file(bed_content);
-        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None);
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None, false);
         BedcovAccumulator::new(parsed, templates)
     }
 
@@ -914,7 +947,7 @@ mod tests {
         // tid=1: [0,5)  ups=[2,0,0,0,-2,…] cov=[2,2,2,2,0], sum_cov=8
         // Total observed bases = 10, total sum = 12 → mean = 1.2
         let f = make_bed_file("chr1\t0\t5\tlabel_a\nchr2\t0\t5\tlabel_a\n");
-        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None);
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None, false);
         let mut acc = BedcovAccumulator::new(
             parsed,
             vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
@@ -1304,7 +1337,7 @@ mod tests {
     fn test_unlabeled_no_bed_regions_on_contig() {
         // BED has a region on chr2 but we process chr1 (tid=0 mapped to empty slot).
         let f = make_bed_file("chr2\t0\t5\tlabel_a\n");
-        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), Some("unlabeled"));
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), Some("unlabeled"), false);
         let mut acc = BedcovAccumulator::new(
             parsed,
             vec![CoverageEstimator::new_estimator_mean(0.0, 0, false)],
@@ -1326,6 +1359,26 @@ mod tests {
             (covs[1][0] - 2.0).abs() < 1e-5,
             "unlabeled mean: expected 2.0, got {}",
             covs[1][0]
+        );
+    }
+
+    /// Confirm that need_bedgraph=false suppresses all three optional allocations.
+    #[test]
+    fn test_no_alloc_without_bedgraph() {
+        let f = make_bed_file("chr1\t0\t10\tlabel_a\n");
+        let parsed = ParsedBed::from_file(f.path().to_str().unwrap(), None, false);
+        assert!(
+            parsed.all_regions.is_none(),
+            "all_regions should be None when need_bedgraph=false"
+        );
+        assert!(
+            parsed.region_lengths.is_none(),
+            "region_lengths should be None when need_bedgraph=false"
+        );
+        let acc = BedcovAccumulator::new(parsed, vec![]);
+        assert!(
+            acc.region_sums.is_none(),
+            "region_sums should be None when need_bedgraph=false"
         );
     }
 }

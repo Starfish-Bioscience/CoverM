@@ -73,9 +73,11 @@ fn main() {
                 let unlabeled_label = m
                     .get_one::<String>("regions-bed-unlabeled")
                     .map(|s| s.as_str());
+                let need_bedgraph = m.contains_id("output-bedcov");
                 let parsed_bed = coverm::bedcov_accumulator::ParsedBed::from_file(
                     bed_path.as_str(),
                     unlabeled_label,
+                    need_bedgraph,
                 );
                 if let Some(dir_str) = m.get_one::<String>("output-bedcov") {
                     let dir = std::path::PathBuf::from(dir_str);
