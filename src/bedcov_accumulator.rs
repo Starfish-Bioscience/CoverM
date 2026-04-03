@@ -335,6 +335,16 @@ pub struct IndexedRegion {
 pub struct BedIndex {
     /// tid → sorted regions on that contig
     pub regions_by_tid: HashMap<u32, Vec<IndexedRegion>>,
+    /// tid → index in ParsedBed.chrom_table (only for tids that have BED regions)
+    pub tid_to_chrom_idx: HashMap<u32, u32>,
+}
+
+/// One unlabeled gap interval recorded for bedGraph output.
+struct UnlabeledEntry {
+    chrom_idx: u32,
+    start: u32,
+    end: u32,
+    sum: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +367,8 @@ pub struct BedcovAccumulator {
     sub_ups_scratch: Vec<i32>,
     /// merged-interval scratch for unlabeled gap computation (reused, never shrunk)
     merged_scratch: Vec<(usize, usize)>,
+    /// Gap intervals accumulated for bedGraph unlabeled track (None when not needed)
+    unlabeled_bg_entries: Option<Vec<UnlabeledEntry>>,
 }
 
 impl BedcovAccumulator {
@@ -368,10 +380,17 @@ impl BedcovAccumulator {
             .all_regions
             .as_ref()
             .map(|ar| vec![0i64; ar.len()]);
+        let unlabeled_bg_entries = if parsed_bed.all_regions.is_some() && parsed_bed.with_unlabeled
+        {
+            Some(Vec::new())
+        } else {
+            None
+        };
         BedcovAccumulator {
             parsed_bed,
             current_index: BedIndex {
                 regions_by_tid: HashMap::new(),
+                tid_to_chrom_idx: HashMap::new(),
             },
             region_sums,
             label_estimator_templates,
@@ -379,6 +398,7 @@ impl BedcovAccumulator {
             pcov_scratch: Vec::new(),
             sub_ups_scratch: Vec::new(),
             merged_scratch: Vec::new(),
+            unlabeled_bg_entries,
         }
     }
 
@@ -387,7 +407,25 @@ impl BedcovAccumulator {
         if let Some(ref mut sums) = self.region_sums {
             sums.fill(0);
         }
+        if let Some(ref mut entries) = self.unlabeled_bg_entries {
+            entries.clear();
+        }
+
+        // Build chrom_name → chrom_idx lookup once (used for tid_to_chrom_idx below).
+        let need_chrom_idx = self.unlabeled_bg_entries.is_some();
+        let chrom_name_to_idx: HashMap<&str, u32> = if need_chrom_idx {
+            self.parsed_bed
+                .chrom_table
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.as_str(), i as u32))
+                .collect()
+        } else {
+            HashMap::new()
+        };
+
         let mut regions_by_tid: HashMap<u32, Vec<IndexedRegion>> = HashMap::new();
+        let mut tid_to_chrom_idx: HashMap<u32, u32> = HashMap::new();
 
         for (tid, name_bytes) in header.target_names().iter().enumerate() {
             let name = match std::str::from_utf8(name_bytes) {
@@ -405,9 +443,15 @@ impl BedcovAccumulator {
                     })
                     .collect();
                 regions_by_tid.insert(tid as u32, indexed);
+                if let Some(&cidx) = chrom_name_to_idx.get(name) {
+                    tid_to_chrom_idx.insert(tid as u32, cidx);
+                }
             }
         }
-        self.current_index = BedIndex { regions_by_tid };
+        self.current_index = BedIndex {
+            regions_by_tid,
+            tid_to_chrom_idx,
+        };
         self.genome_label_estimators.clear();
     }
 
@@ -558,6 +602,21 @@ impl BedcovAccumulator {
                     // Gap interval: [gap_start, ms)
                     let gs = gap_start;
                     let len = ms - gs;
+
+                    // Record for bedGraph unlabeled track (before self destructure).
+                    // pcov_scratch[ms] - pcov_scratch[gs] is the total coverage sum over [gs, ms).
+                    let chrom_idx_opt = self.current_index.tid_to_chrom_idx.get(&tid).copied();
+                    if let (Some(ref mut entries), Some(chrom_idx)) =
+                        (&mut self.unlabeled_bg_entries, chrom_idx_opt)
+                    {
+                        entries.push(UnlabeledEntry {
+                            chrom_idx,
+                            start: gs as u32,
+                            end: ms as u32,
+                            sum: self.pcov_scratch[ms] - self.pcov_scratch[gs],
+                        });
+                    }
+
                     if self.sub_ups_scratch.len() < len {
                         self.sub_ups_scratch.resize(len, 0);
                     }
@@ -673,6 +732,25 @@ impl BedcovAccumulator {
             writeln!(w, "track type=bedGraph name=\"{}\"", label)
                 .expect("Error writing bedGraph track header");
 
+            // The unlabeled pseudo-label has no entries in all_regions.
+            // Its gap intervals are stored separately in unlabeled_bg_entries.
+            if Some(label_idx) == bed.unlabeled_label_idx {
+                if let Some(ref entries) = self.unlabeled_bg_entries {
+                    for e in entries {
+                        let len = (e.end - e.start) as i64;
+                        let mean_cov = if len > 0 {
+                            e.sum as f64 / len as f64
+                        } else {
+                            0.0
+                        };
+                        let chrom = &bed.chrom_table[e.chrom_idx as usize];
+                        writeln!(w, "{}\t{}\t{}\t{:.6}", chrom, e.start, e.end, mean_cov)
+                            .expect("Error writing bedGraph record");
+                    }
+                }
+                continue;
+            }
+
             for (global_idx, region) in all_regions.iter().enumerate() {
                 if region.label_idx != label_idx {
                     continue;
@@ -767,7 +845,10 @@ mod tests {
             })
             .collect();
         regions_by_tid.insert(0, indexed);
-        acc.current_index = BedIndex { regions_by_tid };
+        acc.current_index = BedIndex {
+            regions_by_tid,
+            tid_to_chrom_idx: HashMap::new(),
+        };
     }
 
     #[test]
@@ -997,7 +1078,10 @@ mod tests {
                 );
             }
         }
-        acc.current_index = BedIndex { regions_by_tid };
+        acc.current_index = BedIndex {
+            regions_by_tid,
+            tid_to_chrom_idx: HashMap::new(),
+        };
 
         let ups0: Vec<i32> = vec![1, 0, 0, 0, -1, 0, 0, 0, 0, 0];
         let ups1: Vec<i32> = vec![2, 0, 0, 0, -2, 0, 0, 0, 0, 0];
@@ -1081,7 +1165,10 @@ mod tests {
                     .collect(),
             );
         }
-        acc.current_index = BedIndex { regions_by_tid };
+        acc.current_index = BedIndex {
+            regions_by_tid,
+            tid_to_chrom_idx: HashMap::new(),
+        };
 
         let ups: Vec<i32> = vec![3, 0, 0, 0, 0, -3, 0, 0, 0, 0];
         acc.process_contig(0, "g1", &ups);

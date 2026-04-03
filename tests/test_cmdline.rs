@@ -3830,6 +3830,60 @@ genome6~random_sequence_length_11003	0	0	0
         );
     }
 
+    /// --regions-bed-unlabeled + --output-bedcov must populate the unlabeled track
+    /// with the gap intervals between labeled regions.
+    ///
+    /// BED: seq1 [0,50)=low, [100,200)=high  → unlabeled gap [50,100) and tail [200,1000)
+    ///      seq2 [0,100)=low                  → seq2 has no reads in this BAM, so n≈0
+    ///                                           and no unlabeled entries are emitted for it
+    ///                                           (consistent with mosdepth: zero-coverage
+    ///                                           regions are not written to bedGraph)
+    #[test]
+    fn test_bedcov_unlabeled_bedgraph_has_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--regions-bed-unlabeled",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        let content =
+            std::fs::read_to_string(dir.path().join("2seqs.reads_for_seq1.bedgraph")).unwrap();
+
+        // Unlabeled track header must be present
+        assert!(
+            content.contains("track type=bedGraph name=\"unlabeled\""),
+            "Missing unlabeled track header\ncontent:\n{}",
+            content
+        );
+
+        // Gap [50,100) on seq1 between low and high
+        assert!(
+            content.contains("seq1\t50\t100\t"),
+            "Missing unlabeled gap [50,100) on seq1\ncontent:\n{}",
+            content
+        );
+
+        // Tail [200,1000) on seq1 after high region
+        assert!(
+            content.contains("seq1\t200\t1000\t"),
+            "Missing unlabeled tail [200,1000) on seq1\ncontent:\n{}",
+            content
+        );
+    }
+
     /// Test that 'high' track comes before 'low' track (alphabetical order).
     #[test]
     fn test_bedcov_label_order_alphabetical() {
