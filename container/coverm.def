@@ -3,7 +3,7 @@ From: mambaorg/micromamba:1.5.10-noble
 
 %labels
     Author Starfish-Bioscience
-    Version 0.10.0
+    Version 0.11.0
     Description CoverM with CRAM + spatial metrics support
 
 %files
@@ -51,7 +51,7 @@ From: mambaorg/micromamba:1.5.10-noble
     strobealign --version
 
 %help
-    CoverM version 0.10.0 with CRAM + spatial metrics support
+    CoverM version 0.11.0 with CRAM + spatial metrics support
     Full installation with all dependencies
 
     Available tools:
