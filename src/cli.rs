@@ -809,8 +809,17 @@ pub fn genome_full_help() -> Manual {
                     &[&monospace_roff("anir"), "Average BLAST-like identity of mapped reads"],
                     &[&monospace_roff("rpkm"), "Reads mapped per kilobase of genome, per million mapped reads"],
                     &[&monospace_roff("tpm"), "Transcripts Per Million as described in Li et al 2010 https://doi.org/\\:10.1093/\\:bioinformatics/\\:btp692"],
+                    &[&monospace_roff("islands_per_mbp"), "Number of distinct covered segments (islands) per megabase of genome with signal. Spatial metric."],
+                    &[&monospace_roff("max_gap"), "Largest uncovered region (in bases) between two islands within a contig. Spatial metric."],
+                    &[&monospace_roff("gap_fraction"), "Fraction of internal span (between first and last island) that is uncovered. Spatial metric."],
                 ])
             )))
+            .option(Opt::new("INT").long("--min-island-length").help(
+                &format!("Minimum length of a covered segment to count as an island \
+                for spatial metrics (islands_per_mbp, max_gap, gap_fraction). \
+                Shorter segments are reclassified as uncovered. \
+                {}", default_roff("1"))
+            ))
             .option(Opt::new("FRACTION").long("--min-covered-fraction").help(
                 &format!("Genomes with less covered bases than this are \
                 reported as having zero coverage. \
@@ -870,7 +879,42 @@ pub fn genome_full_help() -> Manual {
                 Flag::new()
                     .long("--discard-unmapped")
                     .help("Exclude unmapped reads from cached BAM files. [default: not set]"),
+            )
+            .option(
+                Opt::new("DIR")
+                    .long("--coverage-profile")
+                    .help(
+                        "Output directory for per-sample BigWig coverage profiles. \
+                        One file per sample: <DIR>/<sample>.bw. [default: not used]",
+                    ),
             ),
+    );
+
+    manual = manual.custom(
+        Section::new("BED region coverage")
+            .option(Opt::new("FILE").long("--regions-bed").help(
+                "BED file (4 tab-separated columns: chrom start end label, \
+                        0-based half-open coordinates). \
+                        Computes per-region coverage statistics grouped by label. \
+                        Appends one column per (label x method) pair to the main output table. \
+                        Incompatible with --contig-end-exclusion. [default: not used]",
+            ))
+            .option(Opt::new("DIR").long("--output-bedcov").help(
+                "Write one multi-track bedGraph file per sample to DIR \
+                        (requires --regions-bed). \
+                        Each file contains one bedGraph track per label (alphabetical order). \
+                        Compatible with IGV, trackViewer (R/Bioconductor), pyGenomeTracks. \
+                        [default: not used]",
+            ))
+            .flag(Flag::new().long("--output-bedcov-compress").help(
+                "Gzip-compress the bedGraph files (.bedgraph.gz). \
+                        Requires --output-bedcov. [default: not set]",
+            ))
+            .option(Opt::new("NAME").long("--regions-bed-unlabeled").help(
+                "Append an extra column set for bases not covered by any BED region. \
+                        The optional NAME argument sets the column label \
+                        (default: \"unlabeled\"). Requires --regions-bed. [default: not set]",
+            )),
     );
 
     manual = manual.example(

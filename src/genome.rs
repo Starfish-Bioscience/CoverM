@@ -826,12 +826,8 @@ pub fn mosdepth_genome_coverage<
                 .unobserved_contig_lengths
                 .append(&mut fill_genome_length_forwards(last_tid, last_genome));
 
-            if let Some(ref mut acc) = bed_acc {
-                acc.process_contig(
-                    last_tid,
-                    str::from_utf8(last_genome.unwrap()).unwrap(),
-                    &ups_and_downs,
-                );
+            if let (Some(ref mut acc), Some(genome)) = (bed_acc.as_mut(), last_genome) {
+                acc.process_contig(last_tid, str::from_utf8(genome).unwrap(), &ups_and_downs);
             }
             let positive_coverage = print_last_genomes(
                 num_mapped_reads_in_current_contig,
