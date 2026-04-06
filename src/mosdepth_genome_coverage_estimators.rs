@@ -593,6 +593,9 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
                             if *num_covered_bases == 0 {
                                 return 0.0;
                             }
+                            if max_index <= min_index {
+                                return 0.0;
+                            }
                             counts[0] += unobserved_contig_length;
 
                             let mut num_accounted_for: usize = 0;
@@ -790,8 +793,11 @@ impl MosdepthGenomeCoverageEstimator for CoverageEstimator {
                             let mut k = 0;
                             // Ensure K is within the range of coverages - take the
                             // lowest coverage.
-                            while counts[k] == 0 {
+                            while k < counts.len() && counts[k] == 0 {
                                 k += 1;
+                            }
+                            if k == counts.len() {
+                                return 0.0;
                             }
                             let mut ex = 0;
                             let mut ex2 = 0;
