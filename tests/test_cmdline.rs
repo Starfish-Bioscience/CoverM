@@ -3994,6 +3994,31 @@ genome6~random_sequence_length_11003	0	0	0
             .unwrap();
     }
 
+    /// Non-regression: variance + --regions-bed with a label that has zero coverage
+    /// must not panic (previously caused out-of-bounds in VarianceGenomeCoverageEstimator).
+    /// BAM has reads on seq2 only → label "high" (seq1 [100,200)) has all-zero counts.
+    #[test]
+    fn test_bedcov_variance_zero_coverage_label_no_panic() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq2.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "variance",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--min-covered-fraction",
+                "0",
+            ])
+            .succeeds()
+            .stdout()
+            .contains("Variance high")
+            .unwrap();
+    }
+
     /// Test that passing multiple BAMs produces one bedGraph file per sample.
     ///
     /// BAM1: 2seqs.reads_for_seq1.bam  → only seq1 has reads
@@ -4383,6 +4408,194 @@ genome6~random_sequence_length_11003	0	0	0
                 "Relative Abundance (%)\t2seqs.reads_for_seq1 Mean\t2seqs.reads_for_seq1 Mean high\t2seqs.reads_for_seq1 Mean low\n",
             )
             .unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional non-regression tests
+    // -----------------------------------------------------------------------
+
+    /// Non-regression: trimmed_mean with --trim-min == --trim-max must not
+    /// produce `inf` (previously caused float division by zero when
+    /// max_index == min_index in the shifted-mean loop).
+    #[test]
+    fn test_trimmed_mean_equal_trim_bounds_no_inf() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1_and_seq2.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "trimmed_mean",
+                "--trim-min",
+                "50",
+                "--trim-max",
+                "50",
+                "--min-covered-fraction",
+                "0",
+            ])
+            .succeeds()
+            .stdout()
+            .doesnt_contain("inf")
+            .unwrap();
+    }
+
+    /// --regions-bed with an empty BED file (only comments) must not panic
+    /// and must produce normal output (no label columns added).
+    #[test]
+    fn test_bedcov_empty_bed_no_panic() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_empty.bed",
+            ])
+            .succeeds()
+            .stdout()
+            .contains("Genome\t")
+            .unwrap();
+    }
+
+    /// Non-regression: --regions-bed + variance + --regions-bed-unlabeled
+    /// combined must not panic and must emit unlabeled variance column.
+    /// BAM has reads on seq1 only → label "high" on seq1 has coverage,
+    /// label "low" on seq2 has zero coverage, unlabeled gaps have coverage.
+    #[test]
+    fn test_bedcov_variance_with_unlabeled_no_panic() {
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "variance",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--regions-bed-unlabeled",
+                "ungrouped",
+                "--min-covered-fraction",
+                "0",
+            ])
+            .succeeds()
+            .stdout()
+            .contains("Variance ungrouped")
+            .unwrap();
+    }
+
+    /// --regions-bed-unlabeled: a contig with NO labeled BED regions must be
+    /// emitted in its entirety as an unlabeled gap entry.
+    ///
+    /// Fixture: 2seqs.reads_for_seq1_and_seq2.bam has reads on seq1 AND seq2.
+    /// BED (bedcov_seq1only.bed) has regions on seq1 only.
+    /// → seq2 has zero labeled regions → the full [0, 1000) interval must
+    ///   appear as an unlabeled entry in the bedGraph.
+    #[test]
+    fn test_bedcov_unlabeled_fully_unlabeled_contig() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1_and_seq2.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_seq1only.bed",
+                "--regions-bed-unlabeled",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        let bedgraph = dir.path().join("2seqs.reads_for_seq1_and_seq2.bedgraph");
+        let content = std::fs::read_to_string(&bedgraph).unwrap();
+
+        // seq2 has no labeled regions → its entire length must appear as unlabeled
+        assert!(
+            content.contains("seq2\t0\t1000\t"),
+            "seq2 should appear as a single unlabeled gap [0,1000)\ncontent:\n{}",
+            content
+        );
+    }
+
+    /// --regions-bed with empty BED + --output-bedcov must produce a bedGraph
+    /// file that is effectively empty (no track headers, no region lines),
+    /// since there are no labels to write.
+    #[test]
+    fn test_bedcov_empty_bed_output_file_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_empty.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+            ])
+            .succeeds()
+            .unwrap();
+
+        let bedgraph = dir.path().join("2seqs.reads_for_seq1.bedgraph");
+        let content = std::fs::read_to_string(&bedgraph).unwrap_or_default();
+        assert!(
+            content.is_empty(),
+            "bedGraph for empty BED should be empty, got:\n{}",
+            content
+        );
+    }
+
+    /// --output-bedcov-compress with multiple BAMs must produce one .gz file
+    /// per sample (not uncompressed .bedgraph files).
+    #[test]
+    fn test_bedcov_compress_multiple_bams() {
+        let dir = tempfile::tempdir().unwrap();
+        Assert::main_binary()
+            .with_args(&[
+                "genome",
+                "--bam-files",
+                "tests/data/2seqs.reads_for_seq1.bam",
+                "tests/data/2seqs.reads_for_seq2.bam",
+                "--separator",
+                "q",
+                "--methods",
+                "mean",
+                "--regions-bed",
+                "tests/data/bedcov_test.bed",
+                "--output-bedcov",
+                dir.path().to_str().unwrap(),
+                "--output-bedcov-compress",
+            ])
+            .succeeds()
+            .unwrap();
+
+        let gz1 = dir.path().join("2seqs.reads_for_seq1.bedgraph.gz");
+        let gz2 = dir.path().join("2seqs.reads_for_seq2.bedgraph.gz");
+        assert!(gz1.exists(), "Missing compressed bedGraph for BAM1");
+        assert!(gz2.exists(), "Missing compressed bedGraph for BAM2");
+
+        // Uncompressed files must NOT exist
+        assert!(
+            !dir.path().join("2seqs.reads_for_seq1.bedgraph").exists(),
+            "Unexpected uncompressed bedGraph for BAM1"
+        );
     }
 }
 
