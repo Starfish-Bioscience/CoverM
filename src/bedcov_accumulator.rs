@@ -46,8 +46,13 @@ pub struct ParsedBed {
     pub all_regions: Option<Vec<RegionInfo>>,
     /// length of each region in bp, parallel to all_regions (Some only when --output-bedcov requested)
     pub region_lengths: Option<Vec<u32>>,
-    /// ordered list of distinct chrom names; region.chrom_idx indexes into this vec
+    /// ordered list of distinct chrom names; region.chrom_idx indexes into this vec.
+    /// Entries 0..base_chrom_count come from the BED file; additional entries are
+    /// appended by reinit_for_bam for BAM contigs that have no BED regions but
+    /// still need unlabeled-gap tracking.
     pub chrom_table: Vec<String>,
+    /// Number of chroms from the BED file (chrom_table is truncated to this on each reinit).
+    pub base_chrom_count: usize,
     /// true when --regions-bed-unlabeled was requested
     pub with_unlabeled: bool,
     /// index of the synthetic unlabeled label (= labels.len()-1 when with_unlabeled)
@@ -246,6 +251,7 @@ impl ParsedBed {
             path
         );
 
+        let base_chrom_count = chrom_table.len();
         ParsedBed {
             regions_by_chrom,
             labels,
@@ -253,6 +259,7 @@ impl ParsedBed {
             all_regions,
             region_lengths,
             chrom_table,
+            base_chrom_count,
             with_unlabeled,
             unlabeled_label_idx,
         }
@@ -411,14 +418,20 @@ impl BedcovAccumulator {
             entries.clear();
         }
 
-        // Build chrom_name → chrom_idx lookup once (used for tid_to_chrom_idx below).
+        // Reset chrom_table to the BED-only entries (strip any BAM-only chroms added
+        // by a previous reinit_for_bam call).
+        let base_count = self.parsed_bed.base_chrom_count;
+        self.parsed_bed.chrom_table.truncate(base_count);
+
+        // Build chrom_name → chrom_idx lookup (used for tid_to_chrom_idx below).
+        // Use owned String keys so we can extend the map while mutating chrom_table.
         let need_chrom_idx = self.unlabeled_bg_entries.is_some();
-        let chrom_name_to_idx: HashMap<&str, u32> = if need_chrom_idx {
+        let mut chrom_name_to_idx: HashMap<String, u32> = if need_chrom_idx {
             self.parsed_bed
                 .chrom_table
                 .iter()
                 .enumerate()
-                .map(|(i, s)| (s.as_str(), i as u32))
+                .map(|(i, s)| (s.clone(), i as u32))
                 .collect()
         } else {
             HashMap::new()
@@ -446,6 +459,17 @@ impl BedcovAccumulator {
                 if let Some(&cidx) = chrom_name_to_idx.get(name) {
                     tid_to_chrom_idx.insert(tid as u32, cidx);
                 }
+            } else if need_chrom_idx {
+                // BAM contig with no BED regions: add to chrom_table so unlabeled
+                // gap entries for this contig can reference a valid chrom_idx.
+                let cidx = *chrom_name_to_idx
+                    .entry(name.to_string())
+                    .or_insert_with(|| {
+                        let new_idx = self.parsed_bed.chrom_table.len() as u32;
+                        self.parsed_bed.chrom_table.push(name.to_string());
+                        new_idx
+                    });
+                tid_to_chrom_idx.insert(tid as u32, cidx);
             }
         }
         self.current_index = BedIndex {
@@ -917,6 +941,14 @@ mod tests {
         assert_eq!(sanitize_filename("my sample"), "my_sample");
         assert_eq!(sanitize_filename("a//b"), "a__b");
         assert_eq!(sanitize_filename("ok-name_1.2"), "ok-name_1.2");
+        // Special POSIX-unsafe characters all map to '_'
+        assert_eq!(sanitize_filename("sample:file"), "sample_file");
+        assert_eq!(sanitize_filename("sample*file"), "sample_file");
+        assert_eq!(sanitize_filename("sample?file"), "sample_file");
+        assert_eq!(sanitize_filename("a\\b"), "a_b");
+        assert_eq!(sanitize_filename("a<b>c"), "a_b_c");
+        assert_eq!(sanitize_filename("a|b"), "a_b");
+        assert_eq!(sanitize_filename("a\"b"), "a_b");
     }
 
     #[test]
